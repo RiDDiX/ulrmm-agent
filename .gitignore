@@ -1,0 +1,23 @@
+# build results
+build/Output
+ulrmm-agent-v*
+*.exe
+*.syso
+
+# archives, local databases and logs
+*.7z
+*.zip
+*.db
+*.log
+
+# helper scripts and images stay out of the tree
+*.py
+*.sh
+*.ico
+*.bmp
+
+# exceptions, they have to come after the patterns above
+# shell scripts the agent embeds
+!agent/scripts/*.sh
+# winpty-agent.exe, needed by the Windows terminal at runtime
+!agent/winpty_bins/**/winpty-agent.exe

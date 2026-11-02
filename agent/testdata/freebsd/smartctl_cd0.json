@@ -1,0 +1,52 @@
+# captured on FreeBSD 14.4-RELEASE-p11 amd64 under QEMU (q35, TCG) on 2026-10-21
+# command: smartctl -n standby -i -H -A -j -d atacam /dev/cd0
+# ---
+{
+  "json_format_version": [
+    1,
+    0
+  ],
+  "smartctl": {
+    "version": [
+      7,
+      5
+    ],
+    "pre_release": false,
+    "svn_revision": "5714",
+    "platform_info": "FreeBSD 14.4-RELEASE-p11 amd64",
+    "build_info": "(local build)",
+    "argv": [
+      "smartctl",
+      "-n",
+      "standby",
+      "-i",
+      "-H",
+      "-A",
+      "-j",
+      "-d",
+      "atacam",
+      "/dev/cd0"
+    ],
+    "messages": [
+      {
+        "string": "Device is in SLEEP mode, exit(2)",
+        "severity": "information"
+      }
+    ],
+    "exit_status": 2
+  },
+  "local_time": {
+    "time_t": 1792582517,
+    "asctime": "Wed Oct 21 11:35:17 2026    "
+  },
+  "device": {
+    "name": "/dev/cd0",
+    "info_name": "/dev/cd0",
+    "type": "atacam",
+    "protocol": "ATA"
+  },
+  "power_mode": {
+    "ata_value": -1,
+    "name": "SLEEP"
+  }
+}

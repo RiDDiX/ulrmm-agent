@@ -1,0 +1,8 @@
+backup-sync.service             loaded    failed     failed       Nightly backup sync
+cron.service                    loaded    active     running      Regular background program processing daemon
+db-migrate.service              loaded    activating start-pre    Database migration runner
+● lost.service                  not-found inactive   dead         lost.service
+mail-relay.service              loaded    inactive   dead         Outgoing mail relay
+nginx.service                   loaded    reloading  reload       A high performance web server
+sshd.service                    loaded    active     running      OpenSSH server daemon
+worker.service                  loaded    deactivating stop-sigterm Queue worker

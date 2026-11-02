@@ -1,0 +1,6 @@
+# captured on FreeBSD 14.4-RELEASE-p11 amd64 under QEMU (q35, TCG) on 2026-10-21
+# command: gmirror status -s (right after gmirror insert test_gm0 md1)
+# the mirror label is shown as test_gm0
+# ---
+mirror/test_gm0  DEGRADED  md0 (ACTIVE)
+mirror/test_gm0  DEGRADED  md1 (SYNCHRONIZING, 4%)

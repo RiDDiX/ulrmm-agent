@@ -1,0 +1,6 @@
+# captured on FreeBSD 14.4-RELEASE-p11 amd64 under QEMU (q35, TCG) on 2026-10-21
+# command: gmirror status -s (two 64 MB md(4) disks)
+# the mirror label is shown as test_gm0
+# ---
+mirror/test_gm0  COMPLETE  md0 (ACTIVE)
+mirror/test_gm0  COMPLETE  md1 (ACTIVE)

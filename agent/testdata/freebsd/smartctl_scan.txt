@@ -1,0 +1,5 @@
+# captured on FreeBSD 14.4-RELEASE-p11 amd64 under QEMU (q35, TCG) on 2026-10-21
+# command: smartctl --scan
+# ---
+/dev/cd0 -d atacam # /dev/cd0, ATA device
+/dev/cd1 -d atacam # /dev/cd1, ATA device

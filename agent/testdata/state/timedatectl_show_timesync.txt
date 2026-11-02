@@ -1,0 +1,9 @@
+FallbackNTPServers=0.pool.example.org 1.pool.example.org
+ServerName=1.pool.example.org
+ServerAddress=192.0.2.123
+RootDistanceMaxUSec=5s
+PollIntervalMinUSec=32s
+PollIntervalMaxUSec=34min 8s
+PollIntervalUSec=17min 4s
+NTPMessage={ Leap=0, Version=4, Mode=4, Stratum=2, Precision=-23, RootDelay=3.012ms, RootDispersion=0.512ms, Reference=0A0B0C0D, Ignored=no, PacketCount=17, Jitter=0.811ms }
+Frequency=1234567

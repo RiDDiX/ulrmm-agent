@@ -1,0 +1,5 @@
+# captured on FreeBSD 14.4-RELEASE-p11 amd64 under QEMU (q35, TCG) on 2026-10-21
+# command: service zfs onestatus
+# ---
+/etc/rc.d/zfs: unknown directive 'status'.
+Usage: /etc/rc.d/zfs [fast|force|one|quiet](start|stop|restart|rcvar|enable|disable|delete|enabled|describe|extracommands)

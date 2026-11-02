@@ -1,0 +1,10 @@
+The `msstore` source requires that you view the following agreements before using.
+Terms of Transaction: https://aka.ms/microsoft-store-terms-of-transaction
+The source requires the current machine's 2-letter geographic region to be sent to the backend service to function properly (ex. "US").
+
+Name                   Id                        Version       Available     Source
+-----------------------------------------------------------------------------------
+App Installer          Microsoft.AppInstaller    1.29.379.0    1.29.380      winget
+Microsoft Edge         Microsoft.Edge            154.0.4258.62 155.0.4283.45 winget
+Virtio-win-guest-tools RedHat.VirtIO             < 0.1.285-1   0.1.285-1     winget
+Windows-Terminal       Microsoft.WindowsTerminal 1.24.12741.0  1.25.2733.0   winget

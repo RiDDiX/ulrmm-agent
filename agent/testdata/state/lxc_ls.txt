@@ -1,0 +1,4 @@
+NAME     STATE   
+build01  RUNNING 
+old-ct   STOPPED 
+paused1  FROZEN  

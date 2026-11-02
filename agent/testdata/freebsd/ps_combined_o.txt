@@ -1,0 +1,8 @@
+# captured on FreeBSD 14.4-RELEASE-p11 amd64 under QEMU (q35, TCG) on 2026-10-21
+# command: ps -axo pid=,uid=,rss=,time=,comm= | head -5
+# ---
+,uid=,rss=,time=,comm=
+                     0
+                     1
+                     2
+                     3

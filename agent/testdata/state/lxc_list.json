@@ -1,0 +1,8 @@
+[
+ {"name":"files","status":"Running","status_code":103,"type":"container","created_at":"2026-01-02T03:04:05Z","last_used_at":"2026-10-19T08:00:00Z",
+  "config":{"image.description":"Debian bookworm amd64","image.os":"Debian"},
+  "state":{"status":"Running","memory":{"usage":268435456,"usage_peak":0},"cpu":{"usage":123456789},
+   "network":{"eth0":{"counters":{"bytes_received":4096,"bytes_sent":8192},"type":"broadcast"},"lo":{"counters":{"bytes_received":100,"bytes_sent":100},"type":"loopback"}}}},
+ {"name":"winvm","status":"Stopped","status_code":102,"type":"virtual-machine","last_used_at":"1970-01-01T00:00:00Z","config":{},"state":null},
+ {"name":"held","status":"Frozen","type":"container","config":{},"state":{"memory":{"usage":1}}}
+]

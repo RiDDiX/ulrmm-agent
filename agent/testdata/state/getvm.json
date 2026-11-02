@@ -1,0 +1,1 @@
+[{"Id":"6f1c2a9e-1111-4c2b-9a77-0d1e2f3a4b5c","Name":"build-vm","State":"Running","CPUUsage":7,"MemoryAssigned":4294967296,"Uptime":3600},{"Id":"0a0b0c0d-2222-4e5f-8a9b-c0d1e2f3a4b5","Name":"lab-dc","State":"Off","CPUUsage":0,"MemoryAssigned":0,"Uptime":0}]

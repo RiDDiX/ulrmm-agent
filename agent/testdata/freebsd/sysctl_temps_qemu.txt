@@ -1,0 +1,49 @@
+# captured on FreeBSD 14.4-RELEASE-p11 amd64 under QEMU (q35, TCG) on 2026-10-21
+# command: sysctl -e dev.cpu hw.acpi.thermal
+# ---
+dev.cpu.3.cx_method=C1/hlt
+dev.cpu.3.cx_usage_counters=34158
+dev.cpu.3.cx_usage=100.00% last 8024us
+dev.cpu.3.cx_lowest=C1
+dev.cpu.3.cx_supported=C1/1/0
+dev.cpu.3.%iommu=
+dev.cpu.3.%parent=acpi0
+dev.cpu.3.%pnpinfo=_HID=none _UID=0 _CID=none
+dev.cpu.3.%location=handle=\_SB_.CPUS.C003
+dev.cpu.3.%driver=cpu
+dev.cpu.3.%desc=ACPI CPU
+dev.cpu.2.cx_method=C1/hlt
+dev.cpu.2.cx_usage_counters=37546
+dev.cpu.2.cx_usage=100.00% last 7591us
+dev.cpu.2.cx_lowest=C1
+dev.cpu.2.cx_supported=C1/1/0
+dev.cpu.2.%iommu=
+dev.cpu.2.%parent=acpi0
+dev.cpu.2.%pnpinfo=_HID=none _UID=0 _CID=none
+dev.cpu.2.%location=handle=\_SB_.CPUS.C002
+dev.cpu.2.%driver=cpu
+dev.cpu.2.%desc=ACPI CPU
+dev.cpu.1.cx_method=C1/hlt
+dev.cpu.1.cx_usage_counters=34131
+dev.cpu.1.cx_usage=100.00% last 5012us
+dev.cpu.1.cx_lowest=C1
+dev.cpu.1.cx_supported=C1/1/0
+dev.cpu.1.%iommu=
+dev.cpu.1.%parent=acpi0
+dev.cpu.1.%pnpinfo=_HID=none _UID=0 _CID=none
+dev.cpu.1.%location=handle=\_SB_.CPUS.C001
+dev.cpu.1.%driver=cpu
+dev.cpu.1.%desc=ACPI CPU
+dev.cpu.0.cx_method=C1/hlt
+dev.cpu.0.cx_usage_counters=39679
+dev.cpu.0.cx_usage=100.00% last 18439us
+dev.cpu.0.cx_lowest=C1
+dev.cpu.0.cx_supported=C1/1/0
+dev.cpu.0.%iommu=
+dev.cpu.0.%parent=acpi0
+dev.cpu.0.%pnpinfo=_HID=none _UID=0 _CID=none
+dev.cpu.0.%location=handle=\_SB_.CPUS.C000
+dev.cpu.0.%driver=cpu
+dev.cpu.0.%desc=ACPI CPU
+dev.cpu.%parent=
+sysctl: unknown oid 'hw.acpi.thermal'

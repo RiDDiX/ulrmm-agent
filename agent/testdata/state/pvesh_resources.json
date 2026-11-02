@@ -1,0 +1,7 @@
+[
+ {"id":"qemu/100","vmid":100,"name":"dc01","node":"pve-a","status":"running","type":"qemu","cpu":0.0525,"maxcpu":4,"mem":4294967296,"maxmem":8589934592,"uptime":86400,"netin":123456,"netout":654321,"template":0},
+ {"id":"lxc/101","vmid":101,"name":"proxy","node":"pve-a","status":"stopped","type":"lxc","cpu":0,"maxcpu":2,"mem":0,"maxmem":1073741824,"uptime":0,"netin":0,"netout":0},
+ {"id":"qemu/9000","vmid":9000,"name":"tmpl-debian","node":"pve-a","status":"stopped","type":"qemu","maxmem":2147483648,"template":1},
+ {"id":"qemu/200","vmid":200,"name":"other-node-vm","node":"pve-b","status":"running","type":"qemu","cpu":0.5,"mem":1,"maxmem":2,"uptime":5},
+ {"id":"storage/pve-a/local","storage":"local","node":"pve-a","type":"storage","status":"available"}
+]

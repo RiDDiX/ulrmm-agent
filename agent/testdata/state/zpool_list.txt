@@ -1,0 +1,3 @@
+tank	ONLINE	3.62T	1.20T
+backup	DEGRADED	7.25T	5.01T
+old	FAULTED	-	-

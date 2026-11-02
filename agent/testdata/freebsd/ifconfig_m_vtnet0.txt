@@ -1,0 +1,15 @@
+# captured on FreeBSD 14.4-RELEASE-p11 amd64 under QEMU (q35, TCG) on 2026-10-21
+# command: ifconfig -m vtnet0
+# ---
+vtnet0: flags=1008843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST,LOWER_UP> metric 0 mtu 1500
+	options=880028<VLAN_MTU,JUMBO_MTU,LINKSTATE,HWSTATS>
+	capabilities=990028<VLAN_MTU,JUMBO_MTU,VLAN_HWFILTER,LINKSTATE,NETMAP,HWSTATS>
+	ether 52:54:00:12:34:56
+	inet 10.0.2.15 netmask 0xffffff00 broadcast 10.0.2.255
+	inet6 fe80::5054:ff:fe12:3456%vtnet0 prefixlen 64 scopeid 0x1
+	inet6 fec0::5054:ff:fe12:3456 prefixlen 64 autoconf pltime 14400 vltime 86400
+	media: Ethernet autoselect (10Gbase-T <full-duplex>)
+	status: active
+	supported media:
+		media autoselect
+	nd6 options=23<PERFORMNUD,ACCEPT_RTADV,AUTO_LINKLOCAL>

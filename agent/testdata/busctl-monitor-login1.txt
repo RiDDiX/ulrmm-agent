@@ -1,0 +1,23 @@
+Monitoring bus message stream.
+‣ Type=signal  Endian=l  Flags=1  Version=1 Cookie=2  Timestamp="Sun 2026-11-01 14:10:53.180126 UTC"
+  Sender=:1.20  Path=/org/freedesktop/login1  Interface=org.freedesktop.login1.Manager  Member=PrepareForShutdownWithMetadata
+  UniqueName=:1.20
+  MESSAGE "ba{sv}" {
+          BOOLEAN true;
+          ARRAY "{sv}" {
+                  DICT_ENTRY "sv" {
+                          STRING "type";
+                          VARIANT "s" {
+                                  STRING "power-off";
+                          };
+                  };
+          };
+  };
+
+‣ Type=signal  Endian=l  Flags=1  Version=1 Cookie=2  Timestamp="Sun 2026-11-01 14:10:53.183319 UTC"
+  Sender=:1.21  Path=/org/freedesktop/login1  Interface=org.freedesktop.login1.Manager  Member=PrepareForShutdown
+  UniqueName=:1.21
+  MESSAGE "b" {
+          BOOLEAN true;
+  };
+

@@ -1,0 +1,15 @@
+22 1 8:2 / / rw,relatime shared:1 - ext4 /dev/sda2 rw,errors=remount-ro
+23 22 0:21 / /proc rw,nosuid,nodev,noexec,relatime shared:12 - proc proc rw
+24 22 0:22 / /sys rw,nosuid,nodev,noexec,relatime shared:2 - sysfs sysfs rw
+25 22 0:5 / /dev rw,nosuid,relatime shared:3 - devtmpfs udev rw,size=4012345k,nr_inodes=1003086,mode=755
+26 22 0:24 / /run rw,nosuid,nodev,noexec,relatime shared:5 - tmpfs tmpfs rw,size=812345k,mode=755
+27 24 0:26 / /sys/fs/cgroup rw,nosuid,nodev,noexec,relatime shared:9 - cgroup2 cgroup2 rw,nsdelegate
+30 22 8:1 / /boot/efi rw,relatime shared:30 - vfat /dev/sda1 rw,fmask=0077,dmask=0077
+31 22 8:17 / /srv/archive ro,noatime shared:31 - xfs /dev/sdb1 rw,attr2,inode64
+32 22 0:45 / /mnt/nas rw,relatime shared:32 - nfs4 nas.example.lan:/export/backup rw,vers=4.2,rsize=1048576,hard,proto=tcp
+33 22 0:46 / /mnt/share\040one rw,relatime shared:33 - cifs //files.example.lan/share rw,vers=3.1.1
+34 31 8:17 / /var/lib/archive-bind ro,noatime shared:31 - xfs /dev/sdb1 rw,attr2,inode64
+35 22 0:51 / /var/lib/docker/overlay2/abc/merged rw,relatime - overlay overlay rw,lowerdir=/x,upperdir=/y,workdir=/z
+36 22 7:3 / /snap/core22/1234 ro,nodev,relatime shared:36 - squashfs /dev/loop3 ro
+37 22 0:52 / /var/lib/lxcfs rw,nosuid,nodev,relatime shared:37 - fuse.lxcfs lxcfs rw,user_id=0,group_id=0
+38 22 0:30 /@home /home rw,relatime shared:38 - btrfs /dev/sdc1 rw,space_cache=v2,subvolid=257

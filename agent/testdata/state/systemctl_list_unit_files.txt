@@ -1,0 +1,10 @@
+backup-sync.service    enabled  enabled
+cron.service           enabled  enabled
+db-migrate.service     static   -
+mail-relay.service     enabled  enabled
+nginx.service          enabled  enabled
+sshd.service           enabled  enabled
+timer-only.service     disabled enabled
+unloaded-enabled.service enabled enabled
+worker.service         enabled  enabled
+getty@.service         enabled  enabled

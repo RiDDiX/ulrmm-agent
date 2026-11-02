@@ -1,0 +1,6 @@
+[
+ {"id":"cluster","type":"cluster","name":"lab","nodes":3,"quorate":1,"version":7},
+ {"id":"node/pve-a","type":"node","name":"pve-a","nodeid":1,"online":1,"local":1,"ip":"192.0.2.11","level":""},
+ {"id":"node/pve-b","type":"node","name":"pve-b","nodeid":2,"online":1,"local":0,"ip":"192.0.2.12","level":""},
+ {"id":"node/pve-c","type":"node","name":"pve-c","nodeid":3,"online":0,"local":0,"ip":"192.0.2.13","level":""}
+]

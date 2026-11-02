@@ -1,0 +1,12 @@
+# captured on FreeBSD 14.4-RELEASE-p11 amd64 under QEMU (q35, TCG) on 2026-10-21
+# command: ntpq -c rv
+# ---
+associd=0 status=0615 leap_none, sync_ntp, 1 event, clock_sync,
+version="ntpd 4.2.8p18-a (1)", processor="amd64",
+system="FreeBSD/14.4-RELEASE-p11", leap=00, stratum=3, precision=-20,
+rootdelay=25.362, rootdisp=4.472, refid=46.4.54.78,
+reftime=ee832189.da164b4a  Wed, Oct 21 2026 11:33:29.851,
+clock=ee8321f5.e76d15a8  Wed, Oct 21 2026 11:35:17.904, peer=42278, tc=6,
+mintc=3, offset=+0.493952, frequency=-2.012, sys_jitter=1.128763,
+clk_jitter=1.078, clk_wander=0.004, tai=37, leapsec=201701010000,
+expire=202606280000

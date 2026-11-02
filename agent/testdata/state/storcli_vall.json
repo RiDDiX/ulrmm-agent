@@ -1,0 +1,22 @@
+{
+"Controllers":[
+{
+	"Command Status" : {"CLI Version" : "007.0000.0000.0000", "Operating system" : "Linux", "Controller" : 0, "Status" : "Success", "Description" : "None"},
+	"Response Data" : {
+		"Virtual Drives" : [
+			{"DG/VD":"0/0","TYPE":"RAID1","State":"Optl","Access":"RW","Consist":"Yes","Cache":"RWBD","Cac":"-","sCC":"ON","Size":"446.625 GB","Name":"system"},
+			{"DG/VD":"1/1","TYPE":"RAID6","State":"Dgrd","Access":"RW","Consist":"No","Cache":"RWBD","Cac":"-","sCC":"ON","Size":"21.830 TB","Name":"data"}
+		]
+	}
+},
+{
+	"Command Status" : {"Controller" : 1, "Status" : "Success"},
+	"Response Data" : {
+		"/c1/v0" : [
+			{"DG/VD":"0/0","TYPE":"RAID10","State":"OfLn","Access":"RW","Consist":"No","Cache":"NRWTD","Cac":"-","sCC":"ON","Size":"1.745 TB","Name":""}
+		],
+		"PDs for VD 0" : [{"EID:Slt":"8:0","DID":4,"State":"Onln"}]
+	}
+}
+]
+}

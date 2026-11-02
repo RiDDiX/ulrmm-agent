@@ -1,0 +1,15 @@
+  -  \  |  /
+Name                                                               Id                           Version       Available     Source
+----------------------------------------------------------------------------------------------------------------------------------
+Mozilla Firefox (x64 de)                                           Mozilla.Firefox.de           130.0.1       131.0         winget
+7-Zip 23.01 (x64)                                                  7zip.7zip                    23.01         24.08         winget
+Microsoft Visual C++ 2015-2022 Redistributable (x64) - 14.38.33135 Microsoft.VCRedist.2015+.x64 14.38.33135.0 14.40.33810.0 winget
+微信 WeChat                                                        Tencent.WeChat               3.9.10        3.9.12        winget
+Notepad++ (64-bit x64)                                             Notepad++.Notepad++          Unknown       8.7           winget
+5 upgrades available.
+
+The following packages have an upgrade available, but require explicit targeting for upgrade:
+Name                        Id          Version  Available Source
+-----------------------------------------------------------------
+PuTTY release 0.80 (64-bit) PuTTY.PuTTY 0.80.0.0 0.81.0.0  winget
+  -  \

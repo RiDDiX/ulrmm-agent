@@ -1,0 +1,13 @@
+       Server: 192.0.2.123 (1.pool.example.org)
+Poll interval: 17min 4s (min: 32s; max 34min 8s)
+         Leap: normal
+      Version: 4
+      Stratum: 2
+    Reference: 0A0B0C0D
+    Precision: 1us (-23)
+Root distance: 2.017ms (max: 5s)
+       Offset: -1.523ms
+        Delay: 6.210ms
+       Jitter: 811us
+ Packet count: 17
+    Frequency: +18.838ppm

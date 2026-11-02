@@ -1,0 +1,5 @@
+{"read":"2026-10-19T10:00:01Z",
+ "cpu_stats":{"cpu_usage":{"total_usage":1100000000,"percpu_usage":[600000000,500000000]},"system_cpu_usage":220000000000},
+ "precpu_stats":{"cpu_usage":{"total_usage":1000000000,"percpu_usage":[550000000,450000000]},"system_cpu_usage":218000000000},
+ "memory_stats":{"usage":104857600,"limit":9223372036854771712,"stats":{"cache":31457280,"total_inactive_file":20971520,"inactive_file":1}},
+ "networks":{"eth0":{"rx_bytes":42,"tx_bytes":24}}}

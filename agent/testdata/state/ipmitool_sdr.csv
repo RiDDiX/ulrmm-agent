@@ -1,0 +1,7 @@
+CPU1 Temp,41,degrees C,ok,3.1,Processor
+CPU2 Temp,88,degrees C,cr,3.2,Processor
+System Fan 1,4200,RPM,ok,29.1,Fan Device
+System Fan 2,na,,ns,29.2,Fan Device
+12V,12.19,Volts,ok,7.1,System Board
+PS1 Status,0x01,discrete,ok,10.1,Power Supply
+Intrusion,,,ns,23.1,Chassis

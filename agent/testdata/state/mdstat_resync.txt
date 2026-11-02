@@ -1,0 +1,10 @@
+Personalities : [raid1]
+md3 : active (auto-read-only) raid1 sdg1[1] sdf1[0]
+      488253440 blocks super 1.2 [2/2] [UU]
+      [=====>...............]  resync = 27.4% (133800448/488253440) finish=31.2min speed=189234K/sec
+
+md4 : active raid1 sdi1[2] sdh1[0]
+      488253440 blocks super 1.2 [2/1] [U_]
+      [>....................]  recovery =  3.1% (15200000/488253440) finish=48.0min speed=164000K/sec
+
+unused devices: <none>

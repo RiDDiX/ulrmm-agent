@@ -1,0 +1,40 @@
+# captured on FreeBSD 14.4-RELEASE-p11 amd64 under QEMU (q35, TCG) on 2026-10-21
+# command: service -e
+# ---
+/etc/rc.d/hostid
+/etc/rc.d/zpool
+/etc/rc.d/zpoolreguid
+/etc/rc.d/zpoolupgrade
+/etc/rc.d/zvol
+/etc/rc.d/growfs
+/etc/rc.d/growfs_fstab
+/etc/rc.d/hostid_save
+/etc/rc.d/var_run
+/etc/rc.d/zfsbe
+/etc/rc.d/kldxref
+/etc/rc.d/zfs
+/etc/rc.d/devmatch
+/etc/rc.d/cleanvar
+/etc/rc.d/nuageinit
+/etc/rc.d/mixer
+/etc/rc.d/ip6addrctl
+/etc/rc.d/rctl
+/etc/rc.d/netif
+/etc/rc.d/devd
+/etc/rc.d/resolv
+/etc/rc.d/virecover
+/etc/rc.d/newsyslog
+/etc/rc.d/cleartmp
+/etc/rc.d/dmesg
+/etc/rc.d/os-release
+/etc/rc.d/gptboot
+/etc/rc.d/motd
+/etc/rc.d/syslogd
+/etc/rc.d/nuageinit_post_net
+/usr/local/etc/rc.d/firstboot_freebsd_update
+/etc/rc.d/savecore
+/etc/rc.d/utx
+/etc/rc.d/nuageinit_user_data_script
+/etc/rc.d/cron
+/etc/rc.d/sshd
+/etc/rc.d/bgfsck

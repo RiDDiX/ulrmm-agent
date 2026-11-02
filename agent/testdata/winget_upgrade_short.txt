@@ -1,0 +1,5 @@
+  -  \  |  /
+Name Id      Version Available Source
+-------------------------------------
+Git  Git.Git 2.46.0  2.47.0    winget
+1 upgrades available.

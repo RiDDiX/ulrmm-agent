@@ -1,0 +1,43 @@
+# captured on FreeBSD 14.4-RELEASE-p11 amd64 under QEMU (q35, TCG) on 2026-10-21
+# command: ps -ax -o pid= -o uid= -o rss= -o time= -o comm= | head -40
+# ---
+    0  0  1472  0:08.60 kernel
+    1  0  1336  0:00.80 init
+    2  0    64  0:00.63 clock
+    3  0    80  0:00.00 crypto
+    4  0    48  0:00.60 cam
+    5  0    16  0:00.00 busdma
+    6  0   896  0:03.23 zfskern
+    7  0    16  0:00.56 rand_harvestq
+    8  0    48  0:00.64 pagedaemon
+    9  0    16  0:00.00 vmdaemon
+   10  0    16  0:00.00 audit
+   11  0    64 67:41.93 idle
+   12  0   176  0:03.16 intr
+   13  0    48  0:00.01 geom
+   14  0    16  0:00.00 sequencer 00
+   15  0    32  0:00.09 bufdaemon
+   16  0    16  0:00.04 vnlru
+   17  0    16  0:00.07 syncer
+  305  0  2616  0:00.01 dhclient
+  308  0  2728  0:00.01 dhclient
+  368 65  2776  0:00.00 dhclient
+  528  0  4144  0:00.52 devd
+  732  0  2740  0:00.52 syslogd
+  837  0  2496  0:00.05 cron
+  937  0  9680  0:01.17 sshd
+11030  0  2996  0:00.01 sh
+12648  0  2260  0:00.00 daemon
+12649  0  9840  0:01.52 meshagent
+12651  0  2136  0:00.00 sleep
+12679  0 10716  0:00.09 sshd-session
+12681  0 10992  0:00.01 sshd-session
+12682  0  2984  0:00.01 sh
+12683  0  3120  0:00.01 ps
+12684  0  2472  0:00.01 head
+  860  0  2844  0:00.06 login
+  867  0  3196  0:00.13 sh
+  852  0  2324  0:00.02 getty
+  853  0  2332  0:00.02 getty
+  854  0  2324  0:00.02 getty
+  855  0  2324  0:00.02 getty
