@@ -121,19 +121,33 @@ func lastInputMillis() (int64, error) {
 }
 
 // closed lid ignores caffeinate. pmset disablesleep is undocumented
-// and the only switch that blocks it. Linux: handle-lid-switch on the inhibitor.
-func holdLid(*awakeState) error {
+// and the only switch that blocks it. The value from before the hold goes
+// back afterwards, so a Mac set to never sleep stays that way.
+// Linux: handle-lid-switch on the inhibitor.
+func holdLid(st *awakeState) error {
 	if runtime.GOOS != "darwin" {
 		return nil
+	}
+	if st.DisableSleep == "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		out, err := runOut(ctx, "/usr/bin/pmset", "-g")
+		cancel()
+		if err != nil {
+			return fmt.Errorf("pmset -g: %v %s", err, clip(out, 128))
+		}
+		st.DisableSleep = parseSleepDisabled(out)
 	}
 	return pmsetDisableSleep("1")
 }
 
-func undoLid(awakeState) error {
+func undoLid(st awakeState) error {
 	if runtime.GOOS != "darwin" {
 		return nil
 	}
-	return pmsetDisableSleep("0")
+	if st.DisableSleep != "1" {
+		st.DisableSleep = "0"
+	}
+	return pmsetDisableSleep(st.DisableSleep)
 }
 
 func pmsetDisableSleep(v string) error {

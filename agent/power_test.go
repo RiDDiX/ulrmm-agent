@@ -209,3 +209,29 @@ func TestAwakeStateRestoreExpired(t *testing.T) {
 		t.Fatal("no state must be fine:", err)
 	}
 }
+
+func TestDisableSleepKept(t *testing.T) {
+	for out, want := range map[string]string{
+		"System-wide power settings:\n SleepDisabled\t\t1\nCurrently in use:\n sleep                1\n": "1",
+		"System-wide power settings:\n SleepDisabled\t\t0\nCurrently in use:\n sleep                1\n": "0",
+		"System-wide power settings:\nCurrently in use:\n sleep                0\n":                      "0",
+	} {
+		if got := parseSleepDisabled(out); got != want {
+			t.Fatalf("%q: %s, want %s", out, got, want)
+		}
+	}
+
+	dir := t.TempDir()
+	old := awakeStateDir
+	awakeStateDir = func() string { return dir }
+	defer func() { awakeStateDir = old }()
+	// a file from an older agent has no value, its hold ended with 0
+	for st, want := range map[awakeState]string{{Until: 1}: "0", {Until: 1, DisableSleep: "1"}: "1"} {
+		if err := saveAwakeState(st); err != nil {
+			t.Fatal(err)
+		}
+		if got, ok := loadAwakeState(); !ok || got.DisableSleep != want {
+			t.Fatalf("%+v read back as %+v", st, got)
+		}
+	}
+}

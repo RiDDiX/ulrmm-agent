@@ -1,5 +1,9 @@
 # Agent changelog
 
+## 1.03.11.2026 (2026-11-03)
+
+- a keep awake hold on macOS ends with the disablesleep value from before the hold, not always with 0
+
 ## 1.02.11.2026 (2026-11-02)
 
 - built with Go 1.27.3, which fixes GO-2026-6809 in crypto/x509 certificate verification

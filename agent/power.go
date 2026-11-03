@@ -46,13 +46,15 @@ func keepAwakeArgv(goos string, d time.Duration, pid int) []string {
 		"timeout", secs, "tail", "--pid=" + p, "-f", "/dev/null"}
 }
 
-// keepawake.json next to the agent: until, and on Windows the lid indexes
-// taken before the hold. A restart puts a live hold back; the indexes are
-// written back when the hold ends.
+// keepawake.json next to the agent: until, and the settings the hold changes
+// as they were before it: the lid indexes on Windows, disablesleep on macOS.
+// A restart puts a live hold back; the old values are written back when the
+// hold ends.
 type awakeState struct {
-	Until int64  `json:"until"`
-	LidAC string `json:"lid_ac,omitempty"`
-	LidDC string `json:"lid_dc,omitempty"`
+	Until        int64  `json:"until"`
+	LidAC        string `json:"lid_ac,omitempty"`
+	LidDC        string `json:"lid_dc,omitempty"`
+	DisableSleep string `json:"disablesleep,omitempty"`
 }
 
 func awakeStateFile() string { return filepath.Join(awakeStateDir(), "keepawake.json") }
@@ -62,6 +64,10 @@ func loadAwakeState() (awakeState, bool) {
 	b, err := os.ReadFile(awakeStateFile())
 	if err != nil || json.Unmarshal(b, &st) != nil {
 		return st, false
+	}
+	// older agents did not keep it, they always ended a hold with 0
+	if st.DisableSleep == "" {
+		st.DisableSleep = "0"
 	}
 	return st, true
 }
@@ -90,6 +96,17 @@ func parseLidIndexes(out string) (ac, dc string, err error) {
 		return "", "", errors.New("lid action not found in powercfg output")
 	}
 	return ac, dc, nil
+}
+
+// pmset -g lists " SleepDisabled\t\t1" under the system-wide settings while
+// disablesleep is on, 0 or no line at all when it is off
+func parseSleepDisabled(out string) string {
+	for _, l := range strings.Split(out, "\n") {
+		if f := strings.Fields(l); len(f) == 2 && f[0] == "SleepDisabled" && f[1] == "1" {
+			return "1"
+		}
+	}
+	return "0"
 }
 
 // powercfg wants this index in decimal
