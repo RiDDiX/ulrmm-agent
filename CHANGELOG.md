@@ -1,5 +1,13 @@
 # Agent changelog
 
+## 2.03.11.2026 (2026-11-03)
+
+- macOS: stay awake on power (keepawakeac). On AC power the Mac never sleeps, lid closed included; on battery it sleeps as usual. The setting is kept in keepawake.json and survives restarts, the power source is checked every 15 s
+- unplugged with the lid closed, the Mac is put to sleep
+- sleep from the dashboard frees every hold first and keeps stay awake on power off for 2 minutes; a failed sleep applies it again at once
+- uninstall, from the dashboard or on the device (-m uninstall, Windows Apps), frees every hold first, so the lid settings go back
+- keepawake.json is written through a temporary file and only when something changed
+
 ## 1.03.11.2026 (2026-11-03)
 
 - a keep awake hold on macOS ends with the disablesleep value from before the hold, not always with 0

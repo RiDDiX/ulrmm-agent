@@ -516,6 +516,10 @@ func (a *Agent) UninstallCleanup() {
 	if err := a.PatchMgmnt(false); err != nil {
 		a.Logger.Debugln("UninstallCleanup() PatchMgmnt():", err)
 	}
+	// the service is stopped; keepawake.json goes with the program directory
+	if err := ReleaseKeepAwakeFile(); err != nil {
+		a.Logger.Debugln("UninstallCleanup(): keep awake:", err)
+	}
 	a.CleanupAgentUpdates()
 	CleanupSchedTasks()
 	if err := newHealPlatform(a).removeSchedule(); err != nil {

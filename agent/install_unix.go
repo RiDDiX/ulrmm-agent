@@ -339,6 +339,12 @@ func (a *Agent) uninstallLocal() error {
 
 	var last error
 	for _, s := range uninstallPlan(runtime.GOOS, meshBins) {
+		// the service is stopped by now
+		if s.remove == nixAgentDir {
+			if err := ReleaseKeepAwakeFile(); err != nil {
+				a.Logger.Debugln("uninstall: keep awake:", err)
+			}
+		}
 		if s.remove != "" {
 			if err := os.RemoveAll(s.remove); err != nil {
 				last = err

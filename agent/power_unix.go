@@ -124,7 +124,7 @@ func lastInputMillis() (int64, error) {
 // and the only switch that blocks it. The value from before the hold goes
 // back afterwards, so a Mac set to never sleep stays that way.
 // Linux: handle-lid-switch on the inhibitor.
-func holdLid(st *awakeState) error {
+var holdLid = func(st *awakeState) error {
 	if runtime.GOOS != "darwin" {
 		return nil
 	}
@@ -140,7 +140,7 @@ func holdLid(st *awakeState) error {
 	return pmsetDisableSleep("1")
 }
 
-func undoLid(st awakeState) error {
+var undoLid = func(st awakeState) error {
 	if runtime.GOOS != "darwin" {
 		return nil
 	}
@@ -148,6 +148,27 @@ func undoLid(st awakeState) error {
 		st.DisableSleep = "0"
 	}
 	return pmsetDisableSleep(st.DisableSleep)
+}
+
+var onACPower = func() bool {
+	if runtime.GOOS != "darwin" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	out, err := runOut(ctx, "/usr/bin/pmset", "-g", "batt")
+	return err == nil && parseOnAC(out)
+}
+
+var sleepIfLidClosed = func() {
+	if runtime.GOOS != "darwin" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if out, err := runOut(ctx, "/usr/sbin/ioreg", "-r", "-k", "AppleClamshellState", "-d", "4"); err == nil && parseLidClosed(out) {
+		_, _ = runOut(ctx, "/usr/bin/pmset", "sleepnow")
+	}
 }
 
 func pmsetDisableSleep(v string) error {

@@ -51,7 +51,7 @@ func powercfg(args ...string) (string, error) {
 
 // The power request blocks idle sleep. Lid close is LIDACTION in the scheme:
 // AC and DC are 0 (do nothing) during the hold, saved indexes restored after.
-func holdLid(st *awakeState) error {
+var holdLid = func(st *awakeState) error {
 	if st.LidAC == "" || st.LidDC == "" {
 		out, err := powercfg("/q", "SCHEME_CURRENT", "SUB_BUTTONS", "LIDACTION")
 		if err != nil {
@@ -64,12 +64,17 @@ func holdLid(st *awakeState) error {
 	return setLid("0", "0")
 }
 
-func undoLid(st awakeState) error {
+var undoLid = func(st awakeState) error {
 	if st.LidAC == "" || st.LidDC == "" {
 		return nil
 	}
 	return setLid(lidIndexArg(st.LidAC), lidIndexArg(st.LidDC))
 }
+
+// stay awake on power is macOS only
+var onACPower = func() bool { return false }
+
+var sleepIfLidClosed = func() {}
 
 func setLid(ac, dc string) error {
 	for _, a := range [][]string{

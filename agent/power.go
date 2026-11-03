@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -46,18 +47,30 @@ func keepAwakeArgv(goos string, d time.Duration, pid int) []string {
 		"timeout", secs, "tail", "--pid=" + p, "-f", "/dev/null"}
 }
 
-// keepawake.json next to the agent: until, and the settings the hold changes
-// as they were before it: the lid indexes on Windows, disablesleep on macOS.
-// A restart puts a live hold back; the old values are written back when the
-// hold ends.
+// keepawake.json next to the agent: until, ac (macOS: stay awake on power),
+// and the settings the hold changes as they were before it: the lid indexes
+// on Windows, disablesleep on macOS. A restart puts a live hold back; the old
+// values are written back when nothing holds any more.
 type awakeState struct {
 	Until        int64  `json:"until"`
+	AC           bool   `json:"ac,omitempty"`
 	LidAC        string `json:"lid_ac,omitempty"`
 	LidDC        string `json:"lid_dc,omitempty"`
 	DisableSleep string `json:"disablesleep,omitempty"`
 }
 
+// The one rule: hold while the timed hold runs, or with ac on AC power
+// outside a suspend pause.
+func awakeWanted(st awakeState, onAC bool, pause, now int64) bool {
+	return st.Until > now || (st.AC && onAC && pause <= now)
+}
+
 func awakeStateFile() string { return filepath.Join(awakeStateDir(), "keepawake.json") }
+
+// a file without ac is always a held one; with ac the old value marks it
+func awakeHeld(st awakeState, ok bool) bool {
+	return ok && (!st.AC || st.DisableSleep != "")
+}
 
 func loadAwakeState() (awakeState, bool) {
 	var st awakeState
@@ -65,19 +78,27 @@ func loadAwakeState() (awakeState, bool) {
 	if err != nil || json.Unmarshal(b, &st) != nil {
 		return st, false
 	}
-	// older agents did not keep it, they always ended a hold with 0
-	if st.DisableSleep == "" {
+	// older agents did not keep it, they always ended a hold with 0. With ac
+	// the file stays while nothing holds, then without a value.
+	if st.DisableSleep == "" && !st.AC {
 		st.DisableSleep = "0"
 	}
 	return st, true
 }
 
+// the file is the only record of the old values: a failed write must not
+// leave it empty
 func saveAwakeState(st awakeState) error {
 	b, err := json.Marshal(st)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(awakeStateFile(), b, 0600)
+	tmp := awakeStateFile() + ".tmp"
+	if err := os.WriteFile(tmp, b, 0600); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, awakeStateFile())
 }
 
 // powercfg /q SCHEME_CURRENT SUB_BUTTONS LIDACTION lines look like
@@ -109,6 +130,28 @@ func parseSleepDisabled(out string) string {
 	return "0"
 }
 
+// pmset -g batt starts with "Now drawing from 'AC Power'"; Battery Power,
+// UPS Power or anything else counts as battery
+func parseOnAC(out string) bool {
+	first, _, _ := strings.Cut(out, "\n")
+	return strings.TrimSpace(first) == "Now drawing from 'AC Power'"
+}
+
+// ioreg -r -k AppleClamshellState -d 4: closed and set to sleep the Mac when
+// both are Yes
+func parseLidClosed(out string) bool {
+	closed, sleeps := false, false
+	for _, l := range strings.Split(out, "\n") {
+		if _, v, ok := strings.Cut(l, `"AppleClamshellState" = `); ok {
+			closed = strings.TrimSpace(v) == "Yes"
+		}
+		if _, v, ok := strings.Cut(l, `"AppleClamshellCausesSleep" = `); ok {
+			sleeps = strings.TrimSpace(v) == "Yes"
+		}
+	}
+	return closed && sleeps
+}
+
 // powercfg wants this index in decimal
 func lidIndexArg(hex string) string {
 	v, err := strconv.ParseInt(strings.TrimPrefix(hex, "0x"), 16, 64)
@@ -118,15 +161,20 @@ func lidIndexArg(hex string) string {
 	return strconv.FormatInt(v, 10)
 }
 
-// one hold per agent; a new keepawake replaces the old one
+// one timed hold per agent; a new keepawake replaces the old one. pause
+// keeps the ac rule off until then (unix seconds), onAC is the power source
+// seen last, watching while the 15 s check is planned.
 var awake struct {
 	sync.Mutex
-	gen     int
-	release func()
-	timer   *time.Timer
+	gen      int
+	release  func()
+	timer    *time.Timer
+	pause    int64
+	onAC     bool
+	watching bool
 }
 
-func stopKeepAwakeLocked() {
+func stopTimedLocked() {
 	if awake.timer != nil {
 		awake.timer.Stop()
 		awake.timer = nil
@@ -137,10 +185,62 @@ func stopKeepAwakeLocked() {
 	}
 }
 
-func StopKeepAwake() {
-	awake.Lock()
-	defer awake.Unlock()
-	stopKeepAwakeLocked()
+// applyAwakeLocked changes keepawake.json and holds or frees the lid by
+// awakeWanted. The first holder keeps the old values in the file, they go
+// back when nothing holds. Nothing is saved when the lid cannot be held.
+func applyAwakeLocked(change func(*awakeState)) error {
+	st, ok := loadAwakeState()
+	held := awakeHeld(st, ok)
+	loaded := st
+	if change != nil {
+		change(&st)
+	}
+	if st.AC && !awake.watching {
+		awake.watching = true
+		time.AfterFunc(15*time.Second, func() {
+			awake.Lock()
+			defer awake.Unlock()
+			awake.watching = false
+			_ = applyAwakeLocked(nil)
+		})
+	}
+	now := time.Now().Unix()
+	onAC := st.AC && onACPower()
+	unplugged := st.AC && awake.onAC && !onAC
+	awake.onAC = onAC
+	var err error
+	switch want := awakeWanted(st, onAC, awake.pause, now); {
+	case want && !held:
+		if err := holdLid(&st); err != nil {
+			return err
+		}
+		if err := saveAwakeState(st); err != nil {
+			undoLid(st)
+			return err
+		}
+		return nil
+	case !want && held:
+		err = undoLid(st)
+		st.LidAC, st.LidDC, st.DisableSleep = "", "", ""
+		held = false
+		// unplugged with the lid closed: whether the Mac sleeps by itself
+		// once disablesleep is off is not known, so it is told to
+		if unplugged {
+			sleepIfLidClosed()
+		}
+	}
+	if !held && !st.AC {
+		os.Remove(awakeStateFile())
+		return err
+	}
+	// the 15 s check mostly finds nothing to change
+	if ok && st == loaded {
+		return err
+	}
+	if serr := saveAwakeState(st); err == nil {
+		err = serr
+	}
+	return err
 }
 
 func KeepAwake(until int64) error {
@@ -150,41 +250,52 @@ func KeepAwake(until int64) error {
 	}
 	awake.Lock()
 	defer awake.Unlock()
-	stopKeepAwakeLocked()
+	stopTimedLocked()
 	if d == 0 {
-		return nil
+		return applyAwakeLocked(func(st *awakeState) { st.Until = 0 })
 	}
 	release, err := holdAwake(d)
+	if err == nil {
+		if err = applyAwakeLocked(func(st *awakeState) { st.Until = until }); err != nil {
+			release()
+		}
+	}
 	if err != nil {
-		return err
-	}
-	// lid indexes in the file are the pre-hold values
-	st, _ := loadAwakeState()
-	st.Until = until
-	if err := holdLid(&st); err != nil {
-		release()
-		return err
-	}
-	if err := saveAwakeState(st); err != nil {
-		release()
-		undoLid(st)
+		_ = applyAwakeLocked(func(st *awakeState) { st.Until = 0 })
 		return err
 	}
 	awake.gen++
 	gen := awake.gen
-	awake.release = func() {
-		release()
-		undoLid(st)
-		os.Remove(awakeStateFile())
-	}
+	awake.release = release
 	awake.timer = time.AfterFunc(d, func() {
 		awake.Lock()
 		defer awake.Unlock()
 		if awake.gen == gen {
-			stopKeepAwakeLocked()
+			stopTimedLocked()
+			_ = applyAwakeLocked(func(st *awakeState) { st.Until = 0 })
 		}
 	})
 	return nil
+}
+
+// keepawakeac RPC: macOS never sleeps on AC power, lid closed included
+func KeepAwakeAC(ac bool) error {
+	if runtime.GOOS != "darwin" {
+		return errors.New("stay awake on power is only available on macOS")
+	}
+	awake.Lock()
+	defer awake.Unlock()
+	return applyAwakeLocked(func(st *awakeState) { st.AC = ac })
+}
+
+// suspend and uninstall: the timed hold ends and the ac rule rests for d,
+// so nothing holds the Mac awake. 0 applies the rule again at once.
+func PauseKeepAwake(d time.Duration) error {
+	awake.Lock()
+	defer awake.Unlock()
+	stopTimedLocked()
+	awake.pause = time.Now().Add(d).Unix()
+	return applyAwakeLocked(func(st *awakeState) { st.Until = 0 })
 }
 
 // idle RPC: seconds since the last user input, -1 without a user session. Any error means unknown and the caller keeps the device awake.
@@ -308,7 +419,8 @@ func PrintUserIdle() {
 	fmt.Println(ms)
 }
 
-// start: until still ahead, hold again; otherwise put the lid back
+// start: until still ahead, hold again; otherwise the rule decides, so ac
+// holds on AC power and a stale lid hold goes back
 func RestoreKeepAwake() error {
 	st, ok := loadAwakeState()
 	if !ok {
@@ -317,6 +429,20 @@ func RestoreKeepAwake() error {
 	if st.Until > time.Now().Unix()+5 {
 		return KeepAwake(st.Until)
 	}
-	os.Remove(awakeStateFile())
+	awake.Lock()
+	defer awake.Unlock()
+	// a hold of the ac rule means the agent before saw AC power, so an
+	// unplug during the restart still counts
+	awake.onAC = st.AC && awakeHeld(st, ok)
+	return applyAwakeLocked(func(st *awakeState) { st.Until = 0 })
+}
+
+// local uninstall, after the service stopped: put back what keepawake.json
+// still holds, the file goes with the agent folder
+func ReleaseKeepAwakeFile() error {
+	st, ok := loadAwakeState()
+	if !awakeHeld(st, ok) {
+		return nil
+	}
 	return undoLid(st)
 }

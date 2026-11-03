@@ -40,6 +40,7 @@ type NatsMsg struct {
 	ScheduledTask          SchedTask  `json:"schedtaskpayload"`
 	RecoveryCommand        string     `json:"recoverycommand"`
 	Until                  int64      `json:"until"`
+	AC                     bool       `json:"ac"`
 	UpdateGUIDs            []string   `json:"guids"`
 	PatchMgmt              bool       `json:"patch_mgmt"`
 	WUADrivers             bool       `json:"wua_drivers"`
@@ -379,19 +380,25 @@ func (r *rpcReq) run() {
 		a.NatsMessage(r.nc, "agent-wmi")
 		_ = r.nc.Flush()
 		time.Sleep(2 * time.Second)
-		// an explicit suspend wins over keep-awake
-		StopKeepAwake()
+		// an explicit suspend wins over keep-awake; stay awake on power
+		// rests for 2 min so it does not hold the Mac right back
+		if err := PauseKeepAwake(2 * time.Minute); err != nil {
+			a.Logger.Debugln("PauseKeepAwake():", err)
+		}
 		// the server stores who sent the command, the agent adds no name
 		_ = a.announcePower(r.nc, "sleep", "rmm", "", 2*time.Second)
 		if err := a.Suspend(); err != nil {
 			_ = a.announcePower(r.nc, "cancel", "rmm", "", 2*time.Second)
 			a.Logger.Errorln("Suspend():", err)
+			_ = PauseKeepAwake(0)
 		}
 
 	case "wakeonlan":
 		r.reply(errOK(sendMagicPackets(p.Macs)))
 	case "keepawake":
 		r.reply(errOK(KeepAwake(p.Until)))
+	case "keepawakeac":
+		r.reply(errOK(KeepAwakeAC(p.AC)))
 	case "idle":
 		secs, err := UserIdle()
 		if err != nil {
@@ -506,6 +513,10 @@ func (r *rpcReq) run() {
 
 	case "uninstall":
 		r.reply("ok")
+		// the agent and its keepawake.json go, so nothing could undo a hold
+		if err := PauseKeepAwake(time.Hour); err != nil {
+			a.Logger.Debugln("PauseKeepAwake():", err)
+		}
 		expectStop(a.dataDir())
 		a.AgentUninstall(p.Code)
 		_ = r.nc.Flush()

@@ -32,6 +32,10 @@ func TestKeepAwakeSpan(t *testing.T) {
 }
 
 func TestKeepAwakeCancelWithoutHold(t *testing.T) {
+	dir := t.TempDir()
+	old := awakeStateDir
+	awakeStateDir = func() string { return dir }
+	defer func() { awakeStateDir = old }()
 	// until <= now only releases, it never starts a hold
 	if err := KeepAwake(time.Now().Unix() - 10); err != nil {
 		t.Fatal(err)
@@ -233,5 +237,194 @@ func TestDisableSleepKept(t *testing.T) {
 		if got, ok := loadAwakeState(); !ok || got.DisableSleep != want {
 			t.Fatalf("%+v read back as %+v", st, got)
 		}
+	}
+}
+
+func TestParseOnAC(t *testing.T) {
+	for out, want := range map[string]bool{
+		"Now drawing from 'AC Power'\n -InternalBattery-0 (id=1)\t100%; charged; 0:00 remaining present: true\n": true,
+		"Now drawing from 'Battery Power'\n -InternalBattery-0 (id=1)\t80%; discharging\n":                       false,
+		"Now drawing from 'UPS Power'\n":   false,
+		"":                                 false,
+		" -InternalBattery-0 'AC Power'\n": false,
+	} {
+		if got := parseOnAC(out); got != want {
+			t.Fatalf("%q: %v, want %v", out, got, want)
+		}
+	}
+}
+
+func TestParseLidClosed(t *testing.T) {
+	ioreg := func(state, sleeps string) string {
+		return "+-o IOPMrootDomain  <class IOPMrootDomain>\n    {\n      \"AppleClamshellState\" = " + state +
+			"\n      \"AppleClamshellCausesSleep\" = " + sleeps + "\n    }\n"
+	}
+	for out, want := range map[string]bool{
+		ioreg("Yes", "Yes"): true,
+		ioreg("Yes", "No"):  false,
+		ioreg("No", "Yes"):  false,
+		ioreg("No", "No"):   false,
+		"":                  false,
+	} {
+		if got := parseLidClosed(out); got != want {
+			t.Fatalf("%q: %v, want %v", out, got, want)
+		}
+	}
+}
+
+func TestAwakeWanted(t *testing.T) {
+	const now = 1_800_000_000
+	for _, c := range []struct {
+		until int64
+		ac    bool
+		onAC  bool
+		pause int64
+		want  bool
+	}{
+		{0, false, false, 0, false},
+		{0, false, true, 0, false},
+		{now + 60, false, false, 0, true},
+		{now, false, true, 0, false},
+		{0, true, true, 0, true},
+		{0, true, false, 0, false},
+		{0, true, true, now + 60, false},
+		{0, true, true, now, true},
+		{now + 60, true, false, now + 60, true},
+	} {
+		st := awakeState{Until: c.until, AC: c.ac}
+		if got := awakeWanted(st, c.onAC, c.pause, now); got != c.want {
+			t.Fatalf("%+v: %v", c, got)
+		}
+	}
+}
+
+// ac stays in the file while nothing holds; without a hold it has no old value
+func TestAwakeStateWithAC(t *testing.T) {
+	dir := t.TempDir()
+	old := awakeStateDir
+	awakeStateDir = func() string { return dir }
+	defer func() { awakeStateDir = old }()
+
+	for st, want := range map[awakeState]string{
+		{AC: true}:                    "",
+		{AC: true, DisableSleep: "1"}: "1",
+		{AC: true, DisableSleep: "0"}: "0",
+	} {
+		if err := saveAwakeState(st); err != nil {
+			t.Fatal(err)
+		}
+		if got, ok := loadAwakeState(); !ok || !got.AC || got.DisableSleep != want {
+			t.Fatalf("%+v read back as %+v", st, got)
+		}
+	}
+
+	if runtime.GOOS == "darwin" {
+		t.Skip("would change pmset")
+	}
+	// off macOS nothing reads AC power: ac alone holds nothing and stays
+	// saved, an ended timed hold leaves it, turning it off drops the file
+	awake.Lock()
+	defer awake.Unlock()
+	// no 15 s check left behind for the real state dir
+	awake.watching = true
+	defer func() { awake.watching = false }()
+	if err := applyAwakeLocked(func(st *awakeState) { *st = awakeState{AC: true, Until: 1} }); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := loadAwakeState(); !ok || !got.AC || got.Until != 1 || got.DisableSleep != "" {
+		t.Fatalf("ac state %+v %v", got, ok)
+	}
+	if err := applyAwakeLocked(func(st *awakeState) { st.AC = false }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(awakeStateFile()); !os.IsNotExist(err) {
+		t.Fatal("state file kept without ac or hold")
+	}
+	if err := KeepAwakeAC(true); err == nil {
+		t.Fatal("stay awake on power accepted off macOS")
+	}
+}
+
+// the lid on a fake Mac: who holds first keeps the old disablesleep, it goes
+// back only when nothing holds, sleepnow only after an unplug
+func TestAwakeTransitions(t *testing.T) {
+	dir := t.TempDir()
+	disable, ac, sleeps := "0", true, 0
+	oldDir, oldHold, oldUndo, oldAC, oldSleep := awakeStateDir, holdLid, undoLid, onACPower, sleepIfLidClosed
+	awakeStateDir = func() string { return dir }
+	holdLid = func(st *awakeState) error {
+		if st.DisableSleep == "" {
+			st.DisableSleep = disable
+		}
+		disable = "1"
+		return nil
+	}
+	undoLid = func(st awakeState) error {
+		disable = st.DisableSleep
+		return nil
+	}
+	onACPower = func() bool { return ac }
+	sleepIfLidClosed = func() { sleeps++ }
+	awake.Lock()
+	awake.watching = true
+	defer func() {
+		awake.watching, awake.onAC, awake.pause = false, false, 0
+		awake.Unlock()
+		awakeStateDir, holdLid, undoLid, onACPower, sleepIfLidClosed = oldDir, oldHold, oldUndo, oldAC, oldSleep
+	}()
+	now := time.Now().Unix()
+	step := func(name string, change func(*awakeState), wantDisable string, wantSleeps int) {
+		t.Helper()
+		if err := applyAwakeLocked(change); err != nil {
+			t.Fatal(name, err)
+		}
+		if disable != wantDisable || sleeps != wantSleeps {
+			t.Fatalf("%s: disablesleep %s sleeps %d, want %s %d", name, disable, sleeps, wantDisable, wantSleeps)
+		}
+	}
+	setAC := func(v bool) func(*awakeState) { return func(st *awakeState) { st.AC = v } }
+	until := func(v int64) func(*awakeState) { return func(st *awakeState) { st.Until = v } }
+
+	step("ac on, on AC", setAC(true), "1", 0)
+	if st, _ := loadAwakeState(); st.DisableSleep != "0" {
+		t.Fatalf("old value %q", st.DisableSleep)
+	}
+	step("tick", nil, "1", 0)
+	step("timed hold too", until(now+3600), "1", 0)
+	ac = false
+	step("unplugged, timed hold runs", nil, "1", 0)
+	step("timed hold ends on battery", until(0), "0", 0)
+	ac = true
+	step("plugged in", nil, "1", 0)
+	ac = false
+	step("unplugged", nil, "0", 1)
+	step("tick on battery", nil, "0", 1)
+	ac = true
+	step("plugged in again", nil, "1", 1)
+	step("ac off", setAC(false), "0", 1)
+	if _, err := os.Stat(awakeStateFile()); !os.IsNotExist(err) {
+		t.Fatal("state file kept without ac or hold")
+	}
+
+	// a Mac set to never sleep stays that way
+	disable = "1"
+	step("ac on, never sleep before", setAC(true), "1", 1)
+	step("ac off, never sleep before", setAC(false), "1", 1)
+
+	disable = "0"
+	step("ac on", setAC(true), "1", 1)
+	awake.pause = now + 120
+	step("suspend pause", nil, "0", 1)
+	awake.pause = now
+	step("pause over", nil, "1", 1)
+
+	// restart on battery after the ac rule held: counts as an unplug
+	awake.onAC = false
+	ac = false
+	st, ok := loadAwakeState()
+	awake.onAC = st.AC && awakeHeld(st, ok)
+	step("restart on battery", until(0), "0", 2)
+	if err := ReleaseKeepAwakeFile(); err != nil || disable != "0" {
+		t.Fatal("release of a free state changed the lid", err, disable)
 	}
 }
