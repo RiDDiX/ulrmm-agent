@@ -78,44 +78,6 @@ func NewUpdateSession() (*IUpdateSession, error) {
 	return s, nil
 }
 
-// InstallWUAUpdate install a WIndows update.
-func (s *IUpdateSession) InstallWUAUpdate(updt *IUpdate) error {
-	if _, err := updt.GetProperty("Title"); err != nil {
-		return fmt.Errorf(`updt.GetProperty("Title"): %v`, err)
-	}
-
-	updts, err := NewUpdateCollection()
-	if err != nil {
-		return err
-	}
-	defer updts.Release()
-
-	eula, err := updt.GetProperty("EulaAccepted")
-	if err != nil {
-		return fmt.Errorf(`updt.GetProperty("EulaAccepted"): %v`, err)
-	}
-	// https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-oaut/7b39eb24-9d39-498a-bcd8-75c38e5823d0
-	if eula.Val == 0 {
-		if _, err := updt.CallMethod("AcceptEula"); err != nil {
-			return fmt.Errorf(`updt.CallMethod("AcceptEula"): %v`, err)
-		}
-	}
-
-	if err := updts.Add(updt); err != nil {
-		return err
-	}
-
-	if err := s.DownloadWUAUpdateCollection(updts); err != nil {
-		return fmt.Errorf("DownloadWUAUpdateCollection error: %v", err)
-	}
-
-	if err := s.InstallWUAUpdateCollection(updts); err != nil {
-		return fmt.Errorf("InstallWUAUpdateCollection error: %v", err)
-	}
-
-	return nil
-}
-
 func NewUpdateCollection() (*IUpdateCollection, error) {
 	updateCollObj, err := oleutil.CreateObject("Microsoft.Update.UpdateColl")
 	if err != nil {
@@ -142,13 +104,6 @@ type IUpdate struct {
 func (c *IUpdateCollection) Add(updt *IUpdate) error {
 	if _, err := c.CallMethod("Add", updt.IDispatch); err != nil {
 		return fmt.Errorf(`IUpdateCollection.CallMethod("Add", updt): %v`, err)
-	}
-	return nil
-}
-
-func (c *IUpdateCollection) RemoveAt(i int) error {
-	if _, err := c.CallMethod("RemoveAt", i); err != nil {
-		return fmt.Errorf(`IUpdateCollection.CallMethod("RemoveAt", %d): %v`, i, err)
 	}
 	return nil
 }
@@ -389,48 +344,6 @@ func WUAUpdates(query string) ([]rmm.UpdatePackage, error) {
 		pkgs = append(pkgs, *p)
 	}
 	return pkgs, nil
-}
-
-// DownloadWUAUpdateCollection downloads all updates in a IUpdateCollection
-func (s *IUpdateSession) DownloadWUAUpdateCollection(updates *IUpdateCollection) error {
-	// returns IUpdateDownloader
-	// https://docs.microsoft.com/en-us/windows/desktop/api/wuapi/nn-wuapi-iupdatedownloader
-	downloaderRaw, err := s.CallMethod("CreateUpdateDownloader")
-	if err != nil {
-		return fmt.Errorf("error calling method CreateUpdateDownloader on IUpdateSession: %v", err)
-	}
-	downloader := downloaderRaw.ToIDispatch()
-	defer downloader.Release()
-
-	if _, err := downloader.PutProperty("Updates", updates.IDispatch); err != nil {
-		return fmt.Errorf("error calling PutProperty Updates on IUpdateDownloader: %v", err)
-	}
-
-	if _, err := downloader.CallMethod("Download"); err != nil {
-		return fmt.Errorf("error calling method Download on IUpdateDownloader: %v", err)
-	}
-	return nil
-}
-
-// InstallWUAUpdateCollection installs all updates in a IUpdateCollection
-func (s *IUpdateSession) InstallWUAUpdateCollection(updates *IUpdateCollection) error {
-	// returns IUpdateInstallersession *ole.IDispatch,
-	// https://docs.microsoft.com/en-us/windows/desktop/api/wuapi/nf-wuapi-iupdatesession-createupdateinstaller
-	installerRaw, err := s.CallMethod("CreateUpdateInstaller")
-	if err != nil {
-		return fmt.Errorf("error calling method CreateUpdateInstaller on IUpdateSession: %v", err)
-	}
-	installer := installerRaw.ToIDispatch()
-	defer installer.Release()
-
-	if _, err := installer.PutProperty("Updates", updates.IDispatch); err != nil {
-		return fmt.Errorf("error calling PutProperty Updates on IUpdateInstaller: %v", err)
-	}
-
-	if _, err := installer.CallMethod("Install"); err != nil {
-		return fmt.Errorf("error calling method Install on IUpdateInstaller: %v", err)
-	}
-	return nil
 }
 
 // GetWUAUpdateCollection queries the Windows Update Agent API searcher with the provided query

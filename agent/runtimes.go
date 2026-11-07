@@ -29,7 +29,7 @@ type scriptRuntime struct {
 	version   string
 	// release URL for this OS and arch, "" when there is none
 	releaseURL string
-	// sha256 of the download as the server pins it, "" when it has none
+	// sha256 of the download as the server pins it, required
 	sha256 string
 	// unpack extracts the release archive into dir and names the binary
 	unpack func(archive, dir string) (string, error)
@@ -67,6 +67,9 @@ func (a *Agent) installRuntime(rt scriptRuntime, force bool) error {
 		a.Logger.Debugln(rt.name, "has no release for", runtime.GOOS, runtime.GOARCH)
 		return nil
 	}
+	if rt.sha256 == "" {
+		return fmt.Errorf("the server sent no sha256 for %s", rt.name)
+	}
 
 	tmp, err := os.MkdirTemp(rt.tmpBase, strings.TrimSuffix(rt.name, "shell")+"temp")
 	if err != nil {
@@ -78,16 +81,12 @@ func (a *Agent) installRuntime(rt scriptRuntime, force bool) error {
 	if err := a.runtimeDownload(url, archive); err != nil {
 		return err
 	}
-	if rt.sha256 != "" {
-		got, err := fileSHA256(archive)
-		if err != nil {
-			return err
-		}
-		if !strings.EqualFold(got, rt.sha256) {
-			return fmt.Errorf("sha256 of the %s download is %s, the server expects %s", rt.name, got, rt.sha256)
-		}
-	} else {
-		a.Logger.Debugln(rt.name, "download not verified: the server sent no sha256")
+	got, err := fileSHA256(archive)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(got, rt.sha256) {
+		return fmt.Errorf("sha256 of the %s download is %s, the server expects %s", rt.name, got, rt.sha256)
 	}
 	src := archive
 	if !bare {

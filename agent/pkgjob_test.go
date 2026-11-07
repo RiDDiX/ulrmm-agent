@@ -187,6 +187,15 @@ func TestPkgPlanCheck(t *testing.T) {
 		{func(p *pkgPlan) { p.Run.Timeout = 86401 }, "run timeout"},
 		{func(p *pkgPlan) { p.Run.Type = "magic" }, "unknown run type"},
 		{func(p *pkgPlan) { p.Run.Exe = "" }, "names no program"},
+		{func(p *pkgPlan) {
+			if runtime.GOOS == "windows" {
+				p.Run.Argv = []string{"/S"}
+			} else {
+				p.Run.Args = "/S"
+			}
+		}, "no arguments for " + runtime.GOOS},
+		{func(p *pkgPlan) { p.Deadline = -1 }, "deadline"},
+		{func(p *pkgPlan) { p.Deadline = 86401 }, "deadline"},
 		{func(p *pkgPlan) { p.Run = script; p.Run.Shell = "cmd" }, "script"},
 		{func(p *pkgPlan) { p.Run = script; p.Run.Body = "" }, "script"},
 		{func(p *pkgPlan) { p.Run = script; p.Run.Env = map[string]string{"A=B": "1"} }, "invalid environment name"},
@@ -333,6 +342,87 @@ func TestPkgDownloadRefreshesPlan(t *testing.T) {
 	err = a.pkgDownload(pkgTestJob, pkgTestPlan(srv.URL+"/dl/a", body), filepath.Join(t.TempDir(), "f"))
 	if paths, _ := srv.seen(); err == nil || err.Error() != "the server answered 403" || len(paths) != pkgTries {
 		t.Fatal(err, paths)
+	}
+}
+
+func TestPkgPlanDeadline(t *testing.T) {
+	p := pkgTestPlan("https://rmm.example/dl", []byte("x"))
+	p.Size = 1 << 20
+	if got := p.deadline(); got != 16+60 {
+		t.Fatal("from size:", got)
+	}
+	p.Size = pkgSizeMax
+	if got := p.deadline(); got != 86400 {
+		t.Fatal("capped:", got)
+	}
+	p.Deadline = 5
+	if got := p.deadline(); got != 5 {
+		t.Fatal("from the plan:", got)
+	}
+}
+
+func TestPkgDownloadDeadline(t *testing.T) {
+	fastPkg(t)
+	body := randBytes(t, 5000)
+	// a byte every 20 ms: never a stall, but far slower than the deadline
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		w.WriteHeader(http.StatusOK)
+		for _, b := range body {
+			w.Write([]byte{b})
+			w.(http.Flusher).Flush()
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(20 * time.Millisecond):
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	a := pkgTestAgent(t, &pkgAPI{})
+	plan := pkgTestPlan(srv.URL+"/dl/a", body)
+	plan.Deadline = 1
+	start := time.Now()
+	err := a.pkgDownload(pkgTestJob, plan, filepath.Join(t.TempDir(), "f"))
+	if err == nil || err.Error() != "the job did not finish within 1 s" || time.Since(start) > 5*time.Second {
+		t.Fatal(err, time.Since(start))
+	}
+}
+
+func TestPatchWithRetry(t *testing.T) {
+	var mu sync.Mutex
+	var calls int
+	var codes []int
+	a := apiAgent(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		code := http.StatusOK
+		if calls < len(codes) {
+			code = codes[calls]
+		}
+		calls++
+		w.WriteHeader(code)
+	})
+	for _, tc := range []struct {
+		codes []int
+		calls int
+		fail  bool
+	}{
+		{nil, 1, false},
+		{[]int{500, 502}, 3, false},
+		{[]int{403}, 1, true},
+		{[]int{500, 500, 500, 500, 500}, 4, true},
+	} {
+		mu.Lock()
+		calls, codes = 0, tc.codes
+		mu.Unlock()
+		err := a.patchWithRetry("/api/v4/agent1/pkgjob/42/", map[string]string{"state": "done"}, time.Millisecond)
+		mu.Lock()
+		n := calls
+		mu.Unlock()
+		if (err != nil) != tc.fail || n != tc.calls {
+			t.Fatalf("codes %v: %v after %d calls, want %d", tc.codes, err, n, tc.calls)
+		}
 	}
 }
 

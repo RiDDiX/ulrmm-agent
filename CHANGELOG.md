@@ -1,5 +1,23 @@
 # Agent changelog
 
+## 1.07.11.2026 (2026-11-07)
+
+- macOS: reinstalling over an existing agent frees the keep awake hold first, so disablesleep does not stay on after the old agent directory is removed
+- Windows: command output keeps stdout and adds stderr below it instead of showing stderr alone
+- nushell and deno are installed only with a sha256 from the server; a custom runtime URL needs INSTALL_NUSHELL_SHA256 or INSTALL_DENO_SHA256 on the server
+- log files under /var/log are opened one path component at a time without following links, so a directory swapped for a link after the check cannot lead outside /var/log
+- agent log rotation never closes stderr when the log file cannot be reopened, and goes back to the file once it can
+- idle detection skips a session that vanished between listing and query instead of failing; when every query fails the result stays unknown
+- service start, stop and restart get their own time budget after the service listing, so slow units no longer report a false "timed out"
+- package job downloads have a deadline (plan "deadline", by default the size at 64 KiB/s plus the run timeout, at most a day); a plan with command arguments only for the other OS is refused
+- registry binary values given as a number list refuse entries above 255 instead of truncating them
+- task results and package and driver job results are sent with the same four tries
+- Windows: the logged-on user fallback no longer looks up admin rights, so a check-in makes no domain controller calls
+- meshagent -nodeid gets 10 s per try instead of 60
+- a winpty terminal that cannot get its process handle reports the error instead of closing silently
+- removed unused Windows update, environment block, service wait and software list helpers; viper dropped from go.mod
+- tests for the update revert, the keep awake release on reinstall, log open and rotation, package deadlines, result retries, registry bytes and the Windows terminal registry
+
 ## 2.03.11.2026 (2026-11-03)
 
 - macOS: stay awake on power (keepawakeac). On AC power the Mac never sleeps, lid closed included; on battery it sleeps as usual. The setting is kept in keepawake.json and survives restarts, the power source is checked every 15 s

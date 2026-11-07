@@ -245,9 +245,4 @@ func (l linuxHeal) installDownload(path, mainPath string) error {
 	return l.restartService()
 }
 
-func (l linuxHeal) restoreBinary(src, mainPath string) error {
-	if err := copyFileAtomic(src, mainPath, 0o755); err != nil {
-		return err
-	}
-	return l.restartService()
-}
+func (l linuxHeal) restoreBinary(src, mainPath string) error { return swapBinary(l, src, mainPath) }

@@ -85,24 +85,6 @@ func pickLoggedOnUser(sessions []string, sessionsOK bool, logons func() []string
 	return noUser
 }
 
-// envBlockStrings splits a Windows environment block (NUL separated
-// entries, an empty entry at the end) into NAME=value strings.
-func envBlockStrings(block []uint16) []string {
-	var ret []string
-	start := 0
-	for i, c := range block {
-		if c != 0 {
-			continue
-		}
-		if i == start {
-			break
-		}
-		ret = append(ret, string(utf16.Decode(block[start:i])))
-		start = i + 1
-	}
-	return ret
-}
-
 // meshNodeIDUsable: the mesh agent prints "not defined" until it has
 // registered with its server.
 func meshNodeIDUsable(id string) bool {

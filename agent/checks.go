@@ -369,7 +369,7 @@ func (a *Agent) RunTask(id int, jitter bool) error {
 	} else {
 		res = a.runTaskActions(task)
 	}
-	if _, err := a.rClient.R().SetBody(res).Patch(url); err != nil {
+	if err := a.patchWithRetry(url, res, pkgRetryWait); err != nil {
 		a.Logger.Debugln("RunTask() patch:", err)
 		return err
 	}

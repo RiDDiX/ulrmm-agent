@@ -258,3 +258,11 @@ func TestPostWingetResult(t *testing.T) {
 		t.Fatal("4xx not reported")
 	}
 }
+
+func TestJoinStreams(t *testing.T) {
+	for _, c := range [][3]string{{"out", "", "out"}, {"out", "err", "out\nerr"}, {"", "err", "\nerr"}} {
+		if got := joinStreams(c[0], c[1]); got != c[2] {
+			t.Errorf("joinStreams(%q, %q) = %q, want %q", c[0], c[1], got, c[2])
+		}
+	}
+}

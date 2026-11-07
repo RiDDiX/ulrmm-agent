@@ -708,7 +708,13 @@ func (a *Agent) probeAgentBinary(path string) error {
 
 // revertAfter is how long a freshly updated build gets to reach the
 // server before the rollback copy comes back.
-const revertAfter = 10 * time.Minute
+var revertAfter = 10 * time.Minute
+
+// tests swap these: the target is the running binary
+var (
+	revertTarget  = os.Executable
+	revertRestart = (*Agent).restartAgentService
+)
 
 // armRevert runs at service start. The rollback copy is there from an
 // update until the new build has a NATS connection (keepNew removes it).
@@ -726,7 +732,7 @@ func (a *Agent) armRevert() func() {
 		if !shouldRevert(a.natsUp.Load(), err == nil) {
 			return
 		}
-		self, err := os.Executable()
+		self, err := revertTarget()
 		if err == nil {
 			err = copyFileAtomic(rollbackCopy, self, 0o755)
 		}
@@ -739,7 +745,7 @@ func (a *Agent) armRevert() func() {
 		a.queueSecurityEvent("update_reverted", a.Version+" did not reach the server within "+revertAfter.String())
 		a.sendSecurityEvents()
 		expectStop(a.dataDir())
-		if err := a.restartAgentService(); err != nil {
+		if err := revertRestart(a); err != nil {
 			clearExpectedStop(a.dataDir())
 			a.Logger.Errorln("update: restart after revert:", err)
 		}
@@ -852,7 +858,7 @@ func (a *Agent) NixMeshNodeID() string {
 		return ""
 	}
 	for i := 0; i < 10; i++ {
-		out := a.CmdV2(&CmdOptions{Shell: a.MeshSystemEXE, Command: "-nodeid", IsExecutable: true, Timeout: defaultCmdTimeout})
+		out := a.CmdV2(&CmdOptions{Shell: a.MeshSystemEXE, Command: "-nodeid", IsExecutable: true, Timeout: 10})
 		if meshNodeIDReady(out.Stdout) {
 			return out.Stdout
 		}

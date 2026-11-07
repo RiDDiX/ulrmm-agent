@@ -231,9 +231,7 @@ func (a *Agent) checkExistingAndRemove(_ bool) {
 			_, _ = healCmd(time.Minute, "service", rcName(), "onestop")
 		}
 		_ = newHealPlatform(a).removeSchedule()
-		for _, p := range []string{nixMeshDir, etcConfig, nixAgentDir} {
-			_ = os.RemoveAll(p)
-		}
+		a.removeOldInstall(nixMeshDir, etcConfig, nixAgentDir)
 		return
 	}
 	if runtime.GOOS != "darwin" {
@@ -251,7 +249,16 @@ func (a *Agent) checkExistingAndRemove(_ bool) {
 	}
 	// the old self-healing job would otherwise run against a deleted copy
 	_ = newHealPlatform(a).removeSchedule()
-	for _, p := range []string{defaultMacMeshSvcDir, nixMeshDir, etcConfig, nixAgentDir, macPlistPath} {
+	a.removeOldInstall(defaultMacMeshSvcDir, nixMeshDir, etcConfig, nixAgentDir, macPlistPath)
+}
+
+// keepawake.json goes with nixAgentDir: the sleep setting it holds comes
+// back first, or the Mac never sleeps again
+func (a *Agent) removeOldInstall(paths ...string) {
+	if err := ReleaseKeepAwakeFile(); err != nil {
+		a.Logger.Debugln("install: keep awake:", err)
+	}
+	for _, p := range paths {
 		_ = os.RemoveAll(p)
 	}
 }

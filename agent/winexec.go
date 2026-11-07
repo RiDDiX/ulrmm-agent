@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Argument building and checks with no Windows API, so the Linux test run covers them.
@@ -137,6 +138,40 @@ const (
 	termCols        = 120
 	termRows        = 30
 )
+
+// termSize is a terminal size that came before its session started.
+type termSize struct {
+	rows, cols int
+	at         time.Time
+}
+
+func termRoomErr(sid string, exists bool, sessions int) error {
+	if exists {
+		return fmt.Errorf("session already exists: %s", sid)
+	}
+	if sessions >= termMaxSessions {
+		return fmt.Errorf("too many terminal sessions on this agent (limit %d)", termMaxSessions)
+	}
+	return nil
+}
+
+// addPendingSize keeps the size for sid and drops sizes older than
+// termPendingTTL.
+func addPendingSize(pending map[string]termSize, sid string, rows, cols int, now time.Time) {
+	for id, p := range pending {
+		if now.Sub(p.at) > termPendingTTL {
+			delete(pending, id)
+		}
+	}
+	pending[sid] = termSize{rows: rows, cols: cols, at: now}
+}
+
+// takePendingSize hands out the size for sid once.
+func takePendingSize(pending map[string]termSize, sid string) (termSize, bool) {
+	size, ok := pending[sid]
+	delete(pending, sid)
+	return size, ok
+}
 
 var (
 	errCustomShell = errors.New("invalid custom shell path: must be an absolute .exe path")

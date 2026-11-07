@@ -63,21 +63,6 @@ func TestPickLoggedOnUser(t *testing.T) {
 	}
 }
 
-func TestEnvBlockStrings(t *testing.T) {
-	block := utf16.Encode([]rune("A=1\x00Path=C:\\Windows\x00USER=jürgen\x00\x00"))
-	want := []string{"A=1", `Path=C:\Windows`, "USER=jürgen"}
-	if got := envBlockStrings(block); !reflect.DeepEqual(got, want) {
-		t.Errorf("%q, want %q", got, want)
-	}
-	if got := envBlockStrings([]uint16{0}); len(got) != 0 {
-		t.Errorf("empty block: %q", got)
-	}
-	// missing terminator: everything up to the last NUL
-	if got := envBlockStrings(utf16.Encode([]rune("A=1\x00B"))); !reflect.DeepEqual(got, []string{"A=1"}) {
-		t.Errorf("unterminated: %q", got)
-	}
-}
-
 func TestMeshHelpers(t *testing.T) {
 	for id, want := range map[string]bool{
 		"":                      false,

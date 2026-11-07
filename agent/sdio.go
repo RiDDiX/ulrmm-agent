@@ -738,17 +738,8 @@ func (a *Agent) runSdioJob(job string, h sdioHost) {
 			}
 		}
 	}
-	for try := 1; ; try++ {
-		code, err := a.sdioPatch(context.Background(), job, body)
-		if err == nil {
-			break
-		}
-		if try == 4 || (code >= 400 && code < 500) {
-			a.Logger.Errorln("sdio: the result of job", job, "did not reach the server:", err)
-			break
-		}
-		a.Logger.Debugln("sdio result:", err)
-		time.Sleep(sdioRetryWait)
+	if err := a.patchWithRetry(fmt.Sprintf(sdioURL, a.AgentID, job), body, sdioRetryWait); err != nil {
+		a.Logger.Errorln("sdio: the result of job", job, "did not reach the server:", err)
 	}
 	a.SendDrivers(true)
 }

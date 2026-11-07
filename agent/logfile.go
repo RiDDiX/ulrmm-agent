@@ -51,7 +51,10 @@ func (l *LogFile) open() error {
 func (l *LogFile) Write(p []byte) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.size > 0 && l.size+int64(len(p)) > logMaxSize {
+	if l.f == os.Stderr {
+		// the reopen after a rotation failed: the disk may be back
+		_ = l.open()
+	} else if l.size > 0 && l.size+int64(len(p)) > logMaxSize {
 		l.rotate()
 	}
 	n, err := l.f.Write(p)
@@ -60,7 +63,9 @@ func (l *LogFile) Write(p []byte) (int, error) {
 }
 
 func (l *LogFile) rotate() {
-	l.f.Close()
+	if l.f != os.Stderr {
+		l.f.Close()
+	}
 	for i := logKeep; i > 1; i-- {
 		_ = os.Rename(fmt.Sprintf("%s.%d", l.path, i-1), fmt.Sprintf("%s.%d", l.path, i))
 	}

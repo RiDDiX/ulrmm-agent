@@ -159,9 +159,13 @@ func PosixSvcAction(name, action string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), nixRPCMax)
 	defer cancel()
 	svcs, err := nixServices(ctx)
+	cancel()
 	if err != nil {
 		return err
 	}
+	// the listing may have used most of the budget
+	ctx, cancel = context.WithTimeout(context.Background(), nixRPCMax)
+	defer cancel()
 	for _, s := range svcs {
 		if s.Unit != name {
 			continue

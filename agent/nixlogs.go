@@ -18,11 +18,11 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 	"unicode/utf8"
 
 	rmm "git.riddix.de/RiDDiX/ulrmm-agent/shared"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -266,7 +266,7 @@ func fileLogs(q logQuery) (*rmm.PosixLogs, error) {
 	if err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := openBeneath(nixLogRoot, p)
 	if err != nil {
 		return nil, err
 	}
@@ -274,6 +274,9 @@ func fileLogs(q logQuery) (*rmm.PosixLogs, error) {
 	fi, err := f.Stat()
 	if err != nil {
 		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("path must be a file under %s/", nixLogRoot)
 	}
 	off := fi.Size() - nixMaxReply
 	if off < 0 {
@@ -314,6 +317,44 @@ func resolveLogPath(root, p string) (string, error) {
 		return "", bad
 	}
 	return real, nil
+}
+
+// openBeneath opens p from resolveLogPath one component at a time from
+// root, none of them a symlink: a link swapped in after the check fails
+// instead of leading out of root. O_NONBLOCK: a fifo must not hang the read.
+// O_NOCTTY: a tty node must not become the controlling terminal.
+func openBeneath(root, p string) (*os.File, error) {
+	bad := fmt.Errorf("path must be a file under %s/", root)
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, err
+	}
+	rel, ok := strings.CutPrefix(p, realRoot+"/")
+	if !ok {
+		return nil, bad
+	}
+	fd, err := unix.Open(realRoot, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: realRoot, Err: err}
+	}
+	parts := strings.Split(rel, "/")
+	for i, name := range parts {
+		flags := unix.O_RDONLY | unix.O_NOFOLLOW | unix.O_CLOEXEC | unix.O_NONBLOCK | unix.O_NOCTTY
+		if i < len(parts)-1 {
+			flags = unix.O_RDONLY | unix.O_NOFOLLOW | unix.O_CLOEXEC | unix.O_DIRECTORY
+		}
+		next, err := unix.Openat(fd, name, flags, 0)
+		unix.Close(fd)
+		if err != nil {
+			// a symlink: ELOOP, EMLINK on FreeBSD, ENOTDIR for a directory
+			if err == unix.ELOOP || err == unix.EMLINK || err == unix.ENOTDIR {
+				return nil, bad
+			}
+			return nil, &os.PathError{Op: "open", Path: p, Err: err}
+		}
+		fd = next
+	}
+	return os.NewFile(uintptr(fd), p), nil
 }
 
 // last n lines; partial means buf starts mid-file and its first line is cut

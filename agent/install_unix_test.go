@@ -20,7 +20,6 @@ import (
 
 	"github.com/go-resty/resty/v2"
 	"github.com/sirupsen/logrus"
-	"github.com/spf13/viper"
 )
 
 func TestAgentConfigIsOwnerOnly(t *testing.T) {
@@ -105,20 +104,18 @@ func TestUninstallCodeRoundTrip(t *testing.T) {
 	}
 }
 
-// A macOS reinstall reads the old config into viper, removes the file and
+// A macOS reinstall reads the old config, removes the file and
 // writes the new one: the old ack must not cover the new code.
 func TestReinstallSendsNewUninstallCode(t *testing.T) {
 	old := etcConfig
 	defer func() { etcConfig = old }()
-	defer viper.Reset()
 	etcConfig = filepath.Join(t.TempDir(), "agent.json")
 
 	createAgentConfig("https://api", "id", "api", "token", "1", "", "", "", "", "")
 	first, _, _ := ensureUninstallCode()
 	(&Agent{Logger: logrus.New()}).startupReported(map[string]interface{}{"uninstall_code": first})
 
-	viper.SetConfigFile(etcConfig)
-	if err := viper.ReadInConfig(); err != nil {
+	if _, err := readConfFile(); err != nil {
 		t.Fatal(err)
 	}
 	os.Remove(etcConfig)
@@ -233,5 +230,35 @@ func TestPinsStoredInConfig(t *testing.T) {
 	}
 	if ok, _ := a.acceptPinDoc(pinDoc(key, "https://127.0.0.1", 7, pin), cs); ok {
 		t.Fatal("the same seq was taken again")
+	}
+}
+
+// a reinstall over an install with a live keep-awake hold puts the sleep
+// setting back before keepawake.json is deleted
+func TestRemoveOldInstallReleasesKeepAwake(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "agent")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	oldDir, oldUndo := awakeStateDir, undoLid
+	t.Cleanup(func() { awakeStateDir, undoLid = oldDir, oldUndo })
+	awakeStateDir = func() string { return dir }
+	var undone string
+	undoLid = func(st awakeState) error {
+		if _, err := os.Stat(awakeStateFile()); err != nil {
+			t.Error("state file gone before the release")
+		}
+		undone = st.DisableSleep
+		return nil
+	}
+	if err := saveAwakeState(awakeState{Until: time.Now().Unix() + 600, DisableSleep: "0"}); err != nil {
+		t.Fatal(err)
+	}
+	testUpdateAgent().removeOldInstall(dir)
+	if undone != "0" {
+		t.Fatalf("sleep setting not put back: %q", undone)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("old install still there: %v", err)
 	}
 }

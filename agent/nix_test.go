@@ -417,6 +417,31 @@ func TestResolveLogPath(t *testing.T) {
 	}
 }
 
+// a directory swapped for a symlink after resolveLogPath must not be followed
+func TestOpenBeneathRefusesSwappedDir(t *testing.T) {
+	root, outside := t.TempDir(), t.TempDir()
+	must(t, os.MkdirAll(filepath.Join(root, "sub"), 0o755))
+	must(t, os.WriteFile(filepath.Join(root, "sub", "b.log"), []byte("in\n"), 0o644))
+	must(t, os.WriteFile(filepath.Join(outside, "b.log"), []byte("secret\n"), 0o644))
+	p, err := resolveLogPath(root, filepath.Join(root, "sub", "b.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := openBeneath(root, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	must(t, os.RemoveAll(filepath.Join(root, "sub")))
+	must(t, os.Symlink(outside, filepath.Join(root, "sub")))
+	if f, err := openBeneath(root, p); err == nil || !strings.Contains(err.Error(), "path must be a file under") {
+		if f != nil {
+			f.Close()
+		}
+		t.Fatal("followed the swapped directory:", err)
+	}
+}
+
 func TestParseLogQuery(t *testing.T) {
 	q, err := parseLogQuery(map[string]string{"source": "journal", "unit": "ssh.service", "priority": "3", "lines": "500", "since": "30"})
 	if err != nil || q != (logQuery{source: "journal", unit: "ssh.service", priority: 3, lines: 500, since: 30}) {

@@ -575,10 +575,7 @@ func (a *Agent) rpcRawCmd(r *rpcReq) {
 			result = fmt.Sprintf("unsupported shell: %s", shell)
 		} else {
 			out, _ := CMDShell(shell, []string{}, command, timeout, false, p.RunAsUser, p.Stream, &a.AgentID, &cmdID, r.nc)
-			result = out[0]
-			if out[1] != "" {
-				result = out[1]
-			}
+			result = joinStreams(out[0], out[1])
 		}
 	} else {
 		opts := a.NewCMDOpts()
@@ -590,10 +587,7 @@ func (a *Agent) rpcRawCmd(r *rpcReq) {
 		opts.Nc = r.nc
 		opts.CmdID = cmdID
 		out := a.CmdV2(opts)
-		result = out.Stdout
-		if out.Stderr != "" {
-			result += "\n" + out.Stderr
-		}
+		result = joinStreams(out.Stdout, out.Stderr)
 	}
 	r.reply(result)
 
@@ -731,6 +725,14 @@ func (a *Agent) rpcAgentUpdate(r *rpcReq) {
 	r.nc.Close()
 	a.ControlService(winSvcName, "stop")
 	os.Exit(0)
+}
+
+// joinStreams keeps stdout and appends stderr below it.
+func joinStreams(stdout, stderr string) string {
+	if stderr != "" {
+		return stdout + "\n" + stderr
+	}
+	return stdout
 }
 
 // plainFileName accepts a bare file name, nothing that walks directories.

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The download's -selftest decides whether it replaces the running build.
@@ -44,4 +45,52 @@ func TestProbeAgentBinary(t *testing.T) {
 			}
 		}
 	}
+}
+
+// without a NATS connection the rollback copy comes back once the time is
+// up; keepNew drops it instead
+func TestArmRevert(t *testing.T) {
+	dir := t.TempDir()
+	oldCopy, oldAfter, oldTarget, oldRestart, oldDir := rollbackCopy, revertAfter, revertTarget, revertRestart, nixAgentDir
+	t.Cleanup(func() {
+		rollbackCopy, revertAfter, revertTarget, revertRestart, nixAgentDir = oldCopy, oldAfter, oldTarget, oldRestart, oldDir
+	})
+	self := filepath.Join(dir, "agent")
+	rollbackCopy, nixAgentDir, revertAfter = self+".previous", dir, 50*time.Millisecond
+	revertTarget = func() (string, error) { return self, nil }
+	restarted := make(chan struct{}, 2)
+	revertRestart = func(*Agent) error { restarted <- struct{}{}; return nil }
+	arm := func() func() {
+		t.Helper()
+		if os.WriteFile(self, []byte("new"), 0o755) != nil || os.WriteFile(rollbackCopy, []byte("old"), 0o755) != nil {
+			t.Fatal("setup")
+		}
+		return testUpdateAgent().armRevert()
+	}
+	check := func(name, want string) {
+		t.Helper()
+		if b, _ := os.ReadFile(self); string(b) != want {
+			t.Fatalf("%s: binary is %q, want %q", name, b, want)
+		}
+		if _, err := os.Stat(rollbackCopy); !os.IsNotExist(err) {
+			t.Fatalf("%s: rollback copy still there: %v", name, err)
+		}
+	}
+
+	arm()
+	select {
+	case <-restarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no revert")
+	}
+	check("never connected", "old")
+
+	arm()()
+	time.Sleep(4 * revertAfter)
+	select {
+	case <-restarted:
+		t.Fatal("reverted after keepNew")
+	default:
+	}
+	check("kept", "new")
 }

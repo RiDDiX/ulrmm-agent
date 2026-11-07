@@ -38,23 +38,6 @@ func DestroyEnvironmentBlock(block *uint16) error {
 	return windows.DestroyEnvironmentBlock(block)
 }
 
-// NAME=value strings from a CreateEnvironmentBlock.
-func EnvironmentBlockToSlice(block *uint16) []string {
-	if block == nil {
-		return nil
-	}
-	// the block ends with two NULs in a row, an empty one with its first
-	n := 0
-	for prev := uint16(0); ; n++ {
-		c := *(*uint16)(unsafe.Add(unsafe.Pointer(block), 2*n))
-		if c == 0 && (n == 0 || prev == 0) {
-			break
-		}
-		prev = c
-	}
-	return envBlockStrings(unsafe.Slice(block, n+1))
-}
-
 // CreateProcessAsUser starts cmdLine with token. si may be the StartupInfo
 // of a STARTUPINFOEX when flags carry EXTENDED_STARTUPINFO_PRESENT. The
 // caller closes the handles in the returned ProcessInformation.

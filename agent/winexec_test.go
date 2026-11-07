@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestWinScriptArgv(t *testing.T) {
@@ -175,5 +176,31 @@ func TestScriptReply(t *testing.T) {
 	// a wait failure after a start keeps the script's code
 	if _, _, c, err := scriptReply("x", "y", 1, false, errors.New("pipe"), 5); c != 1 || err != nil {
 		t.Fatalf("wait failure: %d %v", c, err)
+	}
+}
+
+func TestWinTermRegistry(t *testing.T) {
+	if termRoomErr("a", false, termMaxSessions-1) != nil {
+		t.Error("room below the limit refused")
+	}
+	if termRoomErr("a", false, termMaxSessions) == nil {
+		t.Error("limit not enforced")
+	}
+	if termRoomErr("a", true, 0) == nil {
+		t.Error("duplicate session accepted")
+	}
+
+	now := time.Now()
+	pending := map[string]termSize{}
+	addPendingSize(pending, "old", 10, 20, now.Add(-termPendingTTL-time.Second))
+	addPendingSize(pending, "s", 40, 100, now)
+	if _, ok := pending["old"]; ok {
+		t.Error("expired size kept")
+	}
+	if size, ok := takePendingSize(pending, "s"); !ok || size.rows != 40 || size.cols != 100 {
+		t.Errorf("pending size %+v %v", size, ok)
+	}
+	if _, ok := takePendingSize(pending, "s"); ok {
+		t.Error("pending size handed out twice")
 	}
 }

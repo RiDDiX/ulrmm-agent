@@ -408,3 +408,31 @@ func TestLogFileRotates(t *testing.T) {
 		t.Fatalf("more than two old logs kept, or created not called (%d)", opened)
 	}
 }
+
+// a failed reopen falls back to stderr; stderr must survive the next
+// rotation and the file comes back once it can be opened again
+func TestLogFileStderrFallback(t *testing.T) {
+	dir := t.TempDir()
+	l, err := OpenLogFile(filepath.Join(dir, "agent.log"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(dir, "gone")
+	l.path = filepath.Join(sub, "agent.log")
+	l.rotate()
+	if l.f != os.Stderr {
+		t.Fatal("no stderr fallback")
+	}
+	l.rotate()
+	if _, err := os.Stderr.Stat(); err != nil {
+		t.Fatal("stderr closed:", err)
+	}
+	if err := os.Mkdir(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	l.Write([]byte("back\n"))
+	defer l.f.Close()
+	if b, err := os.ReadFile(l.path); err != nil || string(b) != "back\n" {
+		t.Fatalf("log not reopened: %q %v", b, err)
+	}
+}

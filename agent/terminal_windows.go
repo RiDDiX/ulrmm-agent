@@ -45,11 +45,6 @@ type winTerm struct {
 	once    sync.Once
 }
 
-type termSize struct {
-	rows, cols int
-	at         time.Time
-}
-
 var winTerms = struct {
 	sync.Mutex
 	m       map[string]*winTerm
@@ -58,13 +53,8 @@ var winTerms = struct {
 }{m: map[string]*winTerm{}, pending: map[string]termSize{}}
 
 func termRoom(sid string) error {
-	if _, ok := winTerms.m[sid]; ok {
-		return fmt.Errorf("session already exists: %s", sid)
-	}
-	if len(winTerms.m) >= termMaxSessions {
-		return fmt.Errorf("too many terminal sessions on this agent (limit %d)", termMaxSessions)
-	}
-	return nil
+	_, ok := winTerms.m[sid]
+	return termRoomErr(sid, ok, len(winTerms.m))
 }
 
 func checkTermRoom(sid string) error {
@@ -81,8 +71,7 @@ func addTerm(t *winTerm) error {
 		return err
 	}
 	winTerms.m[t.id] = t
-	size, pending := winTerms.pending[t.id]
-	delete(winTerms.pending, t.id)
+	size, pending := takePendingSize(winTerms.pending, t.id)
 	winTerms.Unlock()
 	if pending {
 		_ = t.resize(size.rows, size.cols)
@@ -374,13 +363,16 @@ func (t *winTerm) startWinPTY(programDir, shell string, runAsUser bool) error {
 		return fmt.Errorf("winpty open failed (%v)", err)
 	}
 	t.pty, t.in, t.out = pty, pty.StdIn, pty.StdOut
-	if h := windows.Handle(pty.GetProcHandle()); h != 0 {
-		// winpty closes its handle on Close, the session keeps its own
-		if d, err := dupHandle(h); err == nil {
-			t.proc = d
-		}
+	// winpty closes its handle on Close, the session keeps its own; without
+	// one nothing would see the shell exit
+	d, err := dupHandle(windows.Handle(pty.GetProcHandle()))
+	if err != nil {
+		close(t.pumped)
+		t.cleanup()
+		return fmt.Errorf("winpty process handle: %w", err)
 	}
-	if t.proc != 0 && canNestJobs() {
+	t.proc = d
+	if canNestJobs() {
 		if job, err := newTermJob(); err == nil {
 			if windows.AssignProcessToJobObject(job, t.proc) == nil {
 				t.job = job
@@ -524,13 +516,7 @@ func ResizeTerminalSessionWindows(sid string, rows, cols int) error {
 	winTerms.Lock()
 	t, ok := winTerms.m[sid]
 	if !ok {
-		now := time.Now()
-		for id, p := range winTerms.pending {
-			if now.Sub(p.at) > termPendingTTL {
-				delete(winTerms.pending, id)
-			}
-		}
-		winTerms.pending[sid] = termSize{rows: rows, cols: cols, at: now}
+		addPendingSize(winTerms.pending, sid, rows, cols, time.Now())
 		winTerms.Unlock()
 		return nil
 	}

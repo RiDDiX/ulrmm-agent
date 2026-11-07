@@ -235,17 +235,6 @@ func (a *Agent) EditService(name, startType string) rmm.SvcActionResult {
 	return rmm.SvcActionResult{OK: true, Reason: ""}
 }
 
-// WaitForService polls every 5 s until the service reports status or
-// retries attempts are used up.
-func WaitForService(name, status string, retries int) {
-	for i := 0; i < retries; i++ {
-		if st, err := GetServiceStatus(name); err == nil && st == status {
-			return
-		}
-		time.Sleep(5 * time.Second)
-	}
-}
-
 func serviceExists(name string) bool {
 	return withService(name, windows.SERVICE_QUERY_STATUS, func(*mgr.Service) error { return nil }) == nil
 }

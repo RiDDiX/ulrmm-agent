@@ -86,15 +86,7 @@ func (darwinHeal) removeSchedule() error {
 }
 
 func (d darwinHeal) installDownload(path, mainPath string) error {
-	if err := copyFileAtomic(path, mainPath, 0o755); err != nil {
-		return err
-	}
-	return d.restartService()
+	return swapBinary(d, path, mainPath)
 }
 
-func (d darwinHeal) restoreBinary(src, mainPath string) error {
-	if err := copyFileAtomic(src, mainPath, 0o755); err != nil {
-		return err
-	}
-	return d.restartService()
-}
+func (d darwinHeal) restoreBinary(src, mainPath string) error { return swapBinary(d, src, mainPath) }

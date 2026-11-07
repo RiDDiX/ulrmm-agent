@@ -66,15 +66,7 @@ func (freebsdHeal) removeSchedule() error {
 }
 
 func (f freebsdHeal) installDownload(path, mainPath string) error {
-	if err := copyFileAtomic(path, mainPath, 0o755); err != nil {
-		return err
-	}
-	return f.restartService()
+	return swapBinary(f, path, mainPath)
 }
 
-func (f freebsdHeal) restoreBinary(src, mainPath string) error {
-	if err := copyFileAtomic(src, mainPath, 0o755); err != nil {
-		return err
-	}
-	return f.restartService()
-}
+func (f freebsdHeal) restoreBinary(src, mainPath string) error { return swapBinary(f, src, mainPath) }

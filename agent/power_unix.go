@@ -62,10 +62,12 @@ func userIdleSeconds() (int64, error) {
 			return 0, err
 		}
 		best := int64(-1)
+		var lastErr error
 		for _, tty := range ttys {
 			var st unix.Stat_t
 			if err := unix.Stat("/dev/"+tty, &st); err != nil {
-				return 0, err
+				lastErr = err
+				continue // logged out since who ran
 			}
 			sec, _ := st.Atim.Unix()
 			if idle := secondsSince(now, sec); best < 0 || idle < best {
@@ -74,10 +76,16 @@ func userIdleSeconds() (int64, error) {
 		}
 		// login window: no GUI user. FreeBSD has no idle source for X.
 		if runtime.GOOS == "freebsd" {
+			if best < 0 && lastErr != nil {
+				return 0, lastErr
+			}
 			return best, nil
 		}
 		if fi, err := os.Stat("/dev/console"); err == nil {
 			if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Uid == 0 {
+				if best < 0 && lastErr != nil {
+					return 0, lastErr
+				}
 				return best, nil
 			}
 		}
@@ -100,18 +108,24 @@ func userIdleSeconds() (int64, error) {
 		return 0, err
 	}
 	best := int64(-1)
+	var lastErr error
 	for _, id := range parseLoginctlSessions(out) {
 		props, err := runOut(ctx, "loginctl", "show-session", id, "-p", "Type", "-p", "Class", "-p", "State", "-p", "IdleHint", "-p", "IdleSinceHint", "-p", "TTY")
 		if err != nil {
-			return 0, err
+			lastErr = err
+			continue // session closed since the listing
 		}
 		idle, user, err := parseLoginctlIdle(props, now)
 		if err != nil {
-			return 0, err
+			lastErr = err
+			continue
 		}
 		if user && (best < 0 || idle < best) {
 			best = idle
 		}
+	}
+	if best < 0 && lastErr != nil {
+		return 0, lastErr
 	}
 	return best, nil
 }

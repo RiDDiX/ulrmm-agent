@@ -141,45 +141,24 @@ func (a *Agent) onPowerEvent(nc *nats.Conn, typ uintptr) {
 // restart started) within window, nil without one or when a 1075 (aborted)
 // came after it.
 func shutdownEvent(window time.Duration) []string {
-	name, err := windows.UTF16PtrFromString("System")
+	h, err := openEventLog("System")
 	if err != nil {
 		return nil
 	}
-	h, _, _ := evtOpenEventLog.Call(0, uintptr(unsafe.Pointer(name)))
-	if h == 0 {
-		return nil
-	}
 	defer evtCloseEventLog.Call(h)
-	cutoff := time.Now().Add(-window).Unix()
-	buf := make([]byte, 64<<10)
-	for {
-		var read, needed uint32
-		r, _, e := evtReadEventLog.Call(h, evtReadFlags, 0, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)),
-			uintptr(unsafe.Pointer(&read)), uintptr(unsafe.Pointer(&needed)))
-		if r == 0 {
-			if e == windows.ERROR_INSUFFICIENT_BUFFER && needed > uint32(len(buf)) && needed <= evtMaxReadBuf {
-				buf = make([]byte, needed)
-				continue
-			}
-			return nil
+	var ins []string
+	readEventRecords(h, time.Now().Add(-window).Unix(), func(rec evtRecord) bool {
+		if !strings.EqualFold(rec.Source, "User32") {
+			return true
 		}
-		recs, ok := parseEventRecords(buf[:read])
-		for _, rec := range recs {
-			if int64(rec.Written) < cutoff {
-				return nil
-			}
-			if !strings.EqualFold(rec.Source, "User32") {
-				continue
-			}
-			switch rec.EventID & 0xffff {
-			case 1074:
-				return rec.Inserts
-			case 1075:
-				return nil
-			}
+		switch rec.EventID & 0xffff {
+		case 1074:
+			ins = rec.Inserts
+			return false
+		case 1075:
+			return false
 		}
-		if !ok {
-			return nil
-		}
-	}
+		return true
+	})
+	return ins
 }

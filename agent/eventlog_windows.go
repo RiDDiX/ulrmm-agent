@@ -4,6 +4,7 @@
 package agent
 
 import (
+	"errors"
 	"runtime"
 	"strings"
 	"time"
@@ -60,13 +61,9 @@ func (a *Agent) GetEventLog(logName string, searchLastDays int, budget time.Dura
 		cutoff = time.Now().Add(-time.Duration(searchLastDays) * 24 * time.Hour).Unix()
 	}
 
-	name, err := windows.UTF16PtrFromString(logName)
+	h, err := openEventLog(logName)
 	if err != nil {
-		return ret
-	}
-	h, _, e := evtOpenEventLog.Call(0, uintptr(unsafe.Pointer(name)))
-	if h == 0 {
-		a.Logger.Errorln("GetEventLog(): open", logName, e)
+		a.Logger.Errorln("GetEventLog(): open", logName, err)
 		return ret
 	}
 	defer evtCloseEventLog.Call(h)
@@ -74,6 +71,50 @@ func (a *Agent) GetEventLog(logName string, searchLastDays int, budget time.Dura
 	msgs := newEvtMessages(logName)
 	defer msgs.close()
 
+	err = readEventRecords(h, cutoff, func(rec evtRecord) bool {
+		ret = append(ret, rmm.EventEntry{
+			Src:   CleanString(rec.Source),
+			Kind:  evtTypeText(rec.EventType),
+			Code:  rec.EventID & 0xffff,
+			Text:  CleanString(msgs.format(rec.Source, rec.EventID, rec.Inserts)),
+			When:  time.Unix(int64(rec.Written), 0).String(),
+			RowID: len(ret) + 1,
+		})
+		if len(ret) >= evtMaxRecords {
+			a.Logger.Debugln("GetEventLog(): record cap reached for", logName)
+			return false
+		}
+		if time.Now().After(deadline) {
+			a.Logger.Debugln("GetEventLog(): time budget used up for", logName)
+			return false
+		}
+		return true
+	})
+	if err == errEvtMalformed {
+		a.Logger.Debugln("GetEventLog(): malformed record in", logName)
+	} else if err != nil {
+		a.Logger.Debugln("GetEventLog(): read", logName, err)
+	}
+	return ret
+}
+
+var errEvtMalformed = errors.New("malformed event record")
+
+func openEventLog(logName string) (uintptr, error) {
+	name, err := windows.UTF16PtrFromString(logName)
+	if err != nil {
+		return 0, err
+	}
+	h, _, e := evtOpenEventLog.Call(0, uintptr(unsafe.Pointer(name)))
+	if h == 0 {
+		return 0, e
+	}
+	return h, nil
+}
+
+// readEventRecords hands the records of h to fn, newest first, until fn
+// returns false, a record is older than cutoff (0 = none) or the log ends.
+func readEventRecords(h uintptr, cutoff int64, fn func(evtRecord) bool) error {
 	buf := make([]byte, 64<<10)
 	for {
 		var read, needed uint32
@@ -84,36 +125,22 @@ func (a *Agent) GetEventLog(logName string, searchLastDays int, budget time.Dura
 				buf = make([]byte, needed)
 				continue
 			}
-			if e != windows.ERROR_HANDLE_EOF {
-				a.Logger.Debugln("GetEventLog(): read", logName, e)
+			if e == windows.ERROR_HANDLE_EOF {
+				return nil
 			}
-			return ret
+			return e
 		}
 		recs, ok := parseEventRecords(buf[:read])
 		for _, rec := range recs {
 			if cutoff != 0 && int64(rec.Written) < cutoff {
-				return ret
+				return nil
 			}
-			ret = append(ret, rmm.EventEntry{
-				Src:   CleanString(rec.Source),
-				Kind:  evtTypeText(rec.EventType),
-				Code:  rec.EventID & 0xffff,
-				Text:  CleanString(msgs.format(rec.Source, rec.EventID, rec.Inserts)),
-				When:  time.Unix(int64(rec.Written), 0).String(),
-				RowID: len(ret) + 1,
-			})
-			if len(ret) >= evtMaxRecords {
-				a.Logger.Debugln("GetEventLog(): record cap reached for", logName)
-				return ret
-			}
-			if time.Now().After(deadline) {
-				a.Logger.Debugln("GetEventLog(): time budget used up for", logName)
-				return ret
+			if !fn(rec) {
+				return nil
 			}
 		}
 		if !ok {
-			a.Logger.Debugln("GetEventLog(): malformed record in", logName)
-			return ret
+			return errEvtMalformed
 		}
 	}
 }

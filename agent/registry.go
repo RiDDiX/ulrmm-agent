@@ -390,6 +390,9 @@ func regBinaryData(data interface{}) ([]byte, error) {
 			if err != nil {
 				return nil, err
 			}
+			if n > 255 {
+				return nil, fmt.Errorf("invalid REG_BINARY byte %v", e)
+			}
 			b = append(b, byte(n))
 		}
 		return b, nil

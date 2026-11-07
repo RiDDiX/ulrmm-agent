@@ -22,6 +22,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -78,6 +79,20 @@ type pkgPlan struct {
 	Run          pkgRun  `json:"run"`
 	SuccessCodes []int64 `json:"success_codes"`
 	RebootCodes  []int64 `json:"reboot_codes"`
+	// seconds for the download, 0 lets the agent work it out
+	Deadline int `json:"deadline"`
+}
+
+// deadline allows 64 KiB/s plus the run timeout, at most a day, when the
+// plan has none.
+func (p *pkgPlan) deadline() int {
+	if p.Deadline > 0 {
+		return p.Deadline
+	}
+	if s := p.Size/(64<<10) + int64(p.Run.Timeout); s < 86400 {
+		return int(s)
+	}
+	return 86400
 }
 
 type pkgResult struct {
@@ -120,6 +135,8 @@ func (p *pkgPlan) check(job string) error {
 		return errors.New("the file name is the name of the extract folder")
 	case p.Run.Timeout <= 0 || p.Run.Timeout > 86400:
 		return fmt.Errorf("the plan has a run timeout of %d s", p.Run.Timeout)
+	case p.Deadline < 0 || p.Deadline > 86400:
+		return fmt.Errorf("the plan has a deadline of %d s", p.Deadline)
 	}
 	switch p.Run.Type {
 	case "script":
@@ -134,6 +151,11 @@ func (p *pkgPlan) check(job string) error {
 	case "command":
 		if p.Run.Exe == "" {
 			return errors.New("the plan names no program")
+		}
+		// each OS reads only its own form of the arguments
+		if runtime.GOOS == "windows" && p.Run.Args == "" && len(p.Run.Argv) > 0 ||
+			runtime.GOOS != "windows" && len(p.Run.Argv) == 0 && p.Run.Args != "" {
+			return fmt.Errorf("the plan has no arguments for %s", runtime.GOOS)
 		}
 	default:
 		return fmt.Errorf("unknown run type %q", p.Run.Type)
@@ -223,8 +245,8 @@ func (a *Agent) pkgClient(link string) (*http.Client, error) {
 
 // pkgGet asks for the bytes w does not have yet and appends them. The
 // status is the server's answer, 0 when there was none.
-func (a *Agent) pkgGet(c *http.Client, link string, w *pkgFile) (int, error) {
-	ctx, cancel := context.WithCancel(context.Background())
+func (a *Agent) pkgGet(ctx context.Context, c *http.Client, link string, w *pkgFile) (int, error) {
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var stalled atomic.Bool
 	t := time.AfterFunc(sdioStall, func() { stalled.Store(true); cancel() })
@@ -291,18 +313,30 @@ func (a *Agent) pkgDownload(job string, plan *pkgPlan, dest string) error {
 	w.progress = m.report
 	defer m.stop()
 
+	secs := plan.deadline()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(secs)*time.Second)
+	defer cancel()
+	late := fmt.Errorf("the job did not finish within %d s", secs)
+
 	link, wait := plan.URL, pkgRetryWait
 	for try := 1; w.pos < plan.Size; try++ {
-		code, err := a.pkgGet(c, link, w)
+		code, err := a.pkgGet(ctx, c, link, w)
 		if err == nil {
 			break
+		}
+		if ctx.Err() != nil {
+			return late
 		}
 		var fatal pkgFatal
 		if try == pkgTries || errors.As(err, &fatal) {
 			return err
 		}
 		a.Logger.Debugln("pkgjob:", job, "try", try, "stopped at", w.pos, err)
-		time.Sleep(wait)
+		select {
+		case <-ctx.Done():
+			return late
+		case <-time.After(wait):
+		}
 		wait *= 2
 		switch code {
 		case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusGone:
@@ -561,6 +595,25 @@ func (a *Agent) pkgPatch(ctx context.Context, job string, body interface{}) (int
 	return r.StatusCode(), nil
 }
 
+// patchWithRetry sends a final result: four tries, wait apart, none more
+// after a 4xx.
+func (a *Agent) patchWithRetry(path string, body interface{}, wait time.Duration) error {
+	for try := 1; ; try++ {
+		code := 0
+		r, err := a.rClient.R().SetBody(body).Patch(path)
+		if err == nil {
+			if code = r.StatusCode(); r.IsError() {
+				err = fmt.Errorf("server answered %d", code)
+			}
+		}
+		if err == nil || try == 4 || (code >= 400 && code < 500) {
+			return err
+		}
+		a.Logger.Debugln("PATCH", path, err)
+		time.Sleep(wait)
+	}
+}
+
 func (a *Agent) pkgProgress(job, state string, done, total int64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -639,17 +692,8 @@ func (a *Agent) runPkgJob(job string) {
 		res, work = a.pkgJob(job)
 		return res
 	}()
-	for try := 1; ; try++ {
-		code, err := a.pkgPatch(context.Background(), job, res)
-		if err == nil {
-			break
-		}
-		if try == 4 || (code >= 400 && code < 500) {
-			a.Logger.Errorln("pkgjob: the result of job", job, "did not reach the server:", err)
-			break
-		}
-		a.Logger.Debugln("pkgjob result:", err)
-		time.Sleep(pkgRetryWait)
+	if err := a.patchWithRetry(fmt.Sprintf(pkgJobURL, a.AgentID, job), res, pkgRetryWait); err != nil {
+		a.Logger.Errorln("pkgjob: the result of job", job, "did not reach the server:", err)
 	}
 	if work != "" {
 		if err := os.RemoveAll(work); err != nil {

@@ -344,6 +344,15 @@ func healFileExists(path string) bool {
 	return err == nil
 }
 
+// swapBinary is installDownload and restoreBinary on Linux, macOS and
+// FreeBSD: the new file takes the binary's place, then the service restarts.
+func swapBinary(p healPlatform, src, mainPath string) error {
+	if err := copyFileAtomic(src, mainPath, 0o755); err != nil {
+		return err
+	}
+	return p.restartService()
+}
+
 // copyFileAtomic never leaves a half written target: it writes next to it and
 // renames. On Windows a running exe cannot be replaced; callers stop it first.
 func copyFileAtomic(src, dst string, mode os.FileMode) error {
