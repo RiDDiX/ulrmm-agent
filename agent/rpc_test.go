@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -264,5 +265,100 @@ func TestJoinStreams(t *testing.T) {
 		if got := joinStreams(c[0], c[1]); got != c[2] {
 			t.Errorf("joinStreams(%q, %q) = %q, want %q", c[0], c[1], got, c[2])
 		}
+	}
+}
+
+// A pending install is closed even when the server is busy once.
+func TestInstallResultsRetry(t *testing.T) {
+	old := pkgRetryWait
+	pkgRetryWait = time.Millisecond
+	defer func() { pkgRetryWait = old }()
+	var mu sync.Mutex
+	seen := map[string]int{}
+	a := apiAgent(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen[r.URL.Path]++
+		n := seen[r.URL.Path]
+		mu.Unlock()
+		if n == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+	})
+	if err := a.postWingetResult(5, "ok", 0); err != nil {
+		t.Fatal("winget:", err)
+	}
+	if err := a.postChocoResult(6, "ok"); err != nil {
+		t.Fatal("choco:", err)
+	}
+	if seen["/api/v4/agent1/5/wingetresult/"] != 2 || seen["/api/v4/agent1/6/chocoresult/"] != 2 {
+		t.Fatalf("calls: %v", seen)
+	}
+}
+
+// Heavy requests wait for a slot, quick ones and probes never wait for a
+// heavy one.
+func TestRunBoundedCapsHeavy(t *testing.T) {
+	var running, peak atomic.Int32
+	release := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < cap(heavySlots)+4; i++ {
+		wg.Add(1)
+		go runBounded("runscript", func() {
+			defer wg.Done()
+			n := running.Add(1)
+			for p := peak.Load(); n > p && !peak.CompareAndSwap(p, n); p = peak.Load() {
+			}
+			<-release
+			running.Add(-1)
+		}, func() {
+			defer wg.Done()
+			t.Error("a heavy request gave up within the wait")
+		})
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for running.Load() < int32(cap(heavySlots)) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	for _, fn := range []string{"ping", "procs"} {
+		quick := make(chan struct{})
+		go runBounded(fn, func() { close(quick) }, func() { t.Error(fn, "busy") })
+		select {
+		case <-quick:
+		case <-time.After(5 * time.Second):
+			t.Fatal(fn, "waited for a heavy slot")
+		}
+	}
+	time.Sleep(20 * time.Millisecond)
+	if p := peak.Load(); p != int32(cap(heavySlots)) {
+		t.Fatalf("%d heavy requests ran at once", p)
+	}
+	close(release)
+	wg.Wait()
+}
+
+// A request that finds its pool full past slotWait is answered busy and
+// never runs.
+func TestRunBoundedBusy(t *testing.T) {
+	old := slotWait
+	defer func() { slotWait = old }()
+	slotWait = 50 * time.Millisecond
+	for i := 0; i < cap(probeSlots); i++ {
+		probeSlots <- struct{}{}
+	}
+	ran, busy := false, false
+	runBounded("wmi", func() { ran = true }, func() { busy = true })
+	if ran || !busy {
+		t.Fatalf("full pool: ran %v busy %v", ran, busy)
+	}
+	// a slot that frees up within the wait is taken
+	slotWait = 5 * time.Second
+	go func() { time.Sleep(10 * time.Millisecond); <-probeSlots }()
+	ran, busy = false, false
+	runBounded("wmi", func() { ran = true }, func() { busy = true })
+	for i := 0; i < cap(probeSlots)-1; i++ {
+		<-probeSlots
+	}
+	if !ran || busy {
+		t.Fatalf("freed slot: ran %v busy %v", ran, busy)
 	}
 }

@@ -395,10 +395,16 @@ func (a *Agent) RunTask(id int, jitter bool) error {
 	return nil
 }
 
+// With KeepGoing a failed step still fails the task: the server judges a
+// run by its retcode alone, so the first non-zero code is kept when a later
+// step ends with 0.
 func (a *Agent) runTaskActions(task rmm.TaskDef) taskResult {
 	var res taskResult
 	start := time.Now()
 	multi := len(task.Steps) > 1
+	failed := 0
+	// all steps together keep what one step keeps: the first and the last part
+	stdoutAll, stderrAll := &lineCollector{}, &lineCollector{}
 	for _, act := range task.Steps {
 		actStart := time.Now()
 		var stdout, stderr string
@@ -412,26 +418,33 @@ func (a *Agent) runTaskActions(task rmm.TaskDef) taskResult {
 				a.Logger.Debugln("RunTask() script:", err)
 			}
 			if multi {
-				res.Stdout += taskHeader("Script", act.ScriptTitle, actStart)
+				stdoutAll.Write([]byte(taskHeader("Script", act.ScriptTitle, actStart)))
 			}
 			// stderr output ends the task, not the exit code; tasks rely on it
 			stop = !task.KeepGoing && stderr != ""
 		case "cmd":
 			stdout, stderr, res.Retcode = a.runTaskCommand(act)
 			if multi {
-				res.Stdout += taskHeader("Command", act.Cmd, actStart)
+				stdoutAll.Write([]byte(taskHeader("Command", act.Cmd, actStart)))
 			}
 			stop = !task.KeepGoing && res.Retcode != 0
 		default:
 			a.Logger.Debugln("Invalid Action", act.Kind)
 			continue
 		}
-		res.Stdout += stdout
-		res.Stderr += stderr
+		stdoutAll.Write([]byte(stdout))
+		stderrAll.Write([]byte(stderr))
+		if failed == 0 {
+			failed = res.Retcode
+		}
 		if stop {
 			break
 		}
 	}
+	if task.KeepGoing && res.Retcode == 0 {
+		res.Retcode = failed
+	}
+	res.Stdout, res.Stderr = stdoutAll.text(), stderrAll.text()
 	res.ExecTime = time.Since(start).Seconds()
 	return res
 }

@@ -1,5 +1,19 @@
 # Agent changelog
 
+## 4.08.11.2026 (2026-11-08)
+
+- app updates: every package gets its own 20 minute budget; the call budget only stops further packages from starting, and packages that never started are reported as "not started" (status not_started), not as failed; a package whose budget ran out is reported as "timed out, the installer may still finish; rescan" (status timed_out) so a finished installer is not shown as failed
+- app updates: the exit code line carries a hint for the common cases (an application is in use, download failed, already installed); every winget run is logged with its context, exe, exit code and duration
+- Windows: the Visual C++ runtime folder for winget as SYSTEM follows the architecture of the winget package, not of the agent build; on 64-bit Windows the x86 App Installer is never used
+- app tool output over 4 MiB is cut and noted, a run that finished keeps its exit code instead of failing
+- winget and chocolatey results are posted with retries like task results
+- Windows Update: an update still installing when the time limit hits is left to the next scan instead of being reported failed and then ok
+- task actions: joined output is capped like one step's output; with "keep going" an earlier failed step sets the task result when the last step passed
+- heavy commands (scripts, raw commands, event log, software list, processes, WMI) run at most 16 at once
+- zip extraction refuses archives over the size or entry limits
+- self-heal files are written through unique temp names, so the service and the scheduled job never mix their writes
+- system tools that leave a child holding the output pipe no longer block past their time limit
+
 ## 3.08.11.2026 (2026-11-08)
 
 - Windows: a driver push that fails hard no longer stops all later driver pushes until the service restarts

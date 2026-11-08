@@ -175,6 +175,33 @@ func TestMacServicePlist(t *testing.T) {
 	}
 }
 
+// The sizes of all entries count together.
+func TestUnzipSizeLimit(t *testing.T) {
+	old := unzipMax
+	unzipMax = 10
+	defer func() { unzipMax = old }()
+	dir := t.TempDir()
+	zp := filepath.Join(dir, "a.zip")
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, name := range []string{"one", "two"} {
+		w, _ := zw.Create(name)
+		w.Write([]byte("123456"))
+	}
+	zw.Close()
+	os.WriteFile(zp, buf.Bytes(), 0o600)
+	if err := Unzip(zp, filepath.Join(dir, "out")); err == nil || !strings.Contains(err.Error(), "unpacks to more than") {
+		t.Fatalf("12 bytes past a 10 byte limit: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "out", "one")); err == nil {
+		t.Fatal("wrote before the check")
+	}
+	unzipMax = 12
+	if err := Unzip(zp, filepath.Join(dir, "ok")); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestUnzipRejectsTraversal(t *testing.T) {
 	dir := t.TempDir()
 	zp := filepath.Join(dir, "a.zip")

@@ -37,11 +37,20 @@ func (a *Agent) GetWinUpdates(drivers bool) {
 }
 
 // Reports each result and, at the end, whether a restart is pending. When
-// the session cannot be had or the run overruns, the updates not handled yet
-// are reported as failed.
+// the session cannot be had or the run overruns, the updates not started yet
+// are reported as failed; the one in flight and the abandoned worker stay
+// silent, the next scan shows what it did.
 func (a *Agent) InstallUpdates(guids []string) {
 	var mu sync.Mutex
-	done, gaveUp := 0, false
+	taken, gaveUp := 0, false
+	report := func(guid string, ok bool) {
+		mu.Lock()
+		stop := gaveUp
+		mu.Unlock()
+		if !stop {
+			a.reportInstall(guid, ok)
+		}
+	}
 	err := wuaBounded(wuaInstallWait, func() error {
 		session, err := NewUpdateSession()
 		if err != nil {
@@ -51,14 +60,14 @@ func (a *Agent) InstallUpdates(guids []string) {
 		for _, guid := range guids {
 			mu.Lock()
 			stop := gaveUp
+			if !stop {
+				taken++
+			}
 			mu.Unlock()
 			if stop {
 				return nil
 			}
-			a.installUpdate(session, guid)
-			mu.Lock()
-			done++
-			mu.Unlock()
+			a.installUpdate(session, guid, report)
 		}
 		return nil
 	})
@@ -66,7 +75,7 @@ func (a *Agent) InstallUpdates(guids []string) {
 		a.Logger.Errorln("InstallUpdates():", err)
 		mu.Lock()
 		gaveUp = true
-		left := guids[done:]
+		left := guids[taken:]
 		mu.Unlock()
 		for _, guid := range left {
 			a.reportInstall(guid, false)
@@ -92,8 +101,8 @@ func (a *Agent) reportInstall(guid string, ok bool) {
 	}
 }
 
-func (a *Agent) installUpdate(s *IUpdateSession, guid string) {
-	report := func(ok bool) { a.reportInstall(guid, ok) }
+func (a *Agent) installUpdate(s *IUpdateSession, guid string, reportGUID func(guid string, ok bool)) {
+	report := func(ok bool) { reportGUID(guid, ok) }
 	queries, ok := wuaIDQueries(guid)
 	if !ok {
 		a.Logger.Errorf("InstallUpdates(): %q is not an update id, skipped", guid)

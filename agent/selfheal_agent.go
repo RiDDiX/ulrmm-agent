@@ -90,7 +90,13 @@ func (a *Agent) selfHealReport(actions []string) {
 func healCmd(timeout time.Duration, name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	cmd := exec.CommandContext(ctx, name, args...)
+	// a child that keeps the pipe open must not hold the caller past the timeout
+	cmd.WaitDelay = pipeDrain
+	out, err := cmd.CombinedOutput()
+	if errors.Is(err, exec.ErrWaitDelay) {
+		err = nil
+	}
 	return string(out), err
 }
 

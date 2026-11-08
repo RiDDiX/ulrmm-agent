@@ -233,7 +233,12 @@ func runOut(ctx context.Context, name string, args ...string) (string, error) {
 		cmd.Env = untranslatedEnv(os.Environ())
 	}
 	cmd.Stdout = &out
+	cmd.WaitDelay = pipeDrain
 	err := cmd.Run()
+	// a child left holding stdout does not fail a run that exited 0
+	if errors.Is(err, exec.ErrWaitDelay) {
+		err = nil
+	}
 	if err == nil && out.over {
 		err = errOutputTooLarge
 	}

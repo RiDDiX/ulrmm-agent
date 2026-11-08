@@ -35,10 +35,14 @@ type AppUpgradeResult struct {
 	ID         string `json:"id"`
 	OK         bool   `json:"ok"`
 	OutputTail string `json:"output_tail"`
+	// appNotStarted or appTimedOut when ok is false for one of these reasons
+	Status string `json:"status,omitempty"`
 }
 
 const (
-	// the server waits 120 s for a list and 600 s for an upgrade
+	// the server waits 120 s for a list and 1800 s for an upgrade; no
+	// package starts after appUpgradeMax, one that runs gets wingetUpgradeMax
+	// but no more than what is left until appAnswerBy
 	appListMax    = 110 * time.Second
 	appUpgradeMax = 570 * time.Second
 	appTailMax    = 2000
@@ -46,6 +50,21 @@ const (
 	// same limit as a choco install
 	wingetInstallMax  = 1200 * time.Second
 	wingetInstallTail = 64 << 10
+
+	appNotStarted = "not_started"
+	appTimedOut   = "timed_out"
+	// only the parent is killed at the limit, an installer it started goes on
+	appTimedOutText = "timed out, the installer may still finish; rescan"
+)
+
+var (
+	// one package's own limit; tests shorten it
+	wingetUpgradeMax = 20 * time.Minute
+	// an upgrade call answers by then, counted from its start
+	appAnswerBy = 1770 * time.Second
+	appNow      = time.Now
+	// how long a run waits for a child that keeps its output open
+	pipeDrain = 10 * time.Second
 )
 
 var (
@@ -117,15 +136,38 @@ func parseAppIDs(s string) ([]string, error) {
 	return ids, nil
 }
 
-// upgradeEach runs one upgrade per id until the time is up.
+// upgradeEach runs one upgrade per id, each with its own wingetUpgradeMax,
+// cut so the call still answers by appAnswerBy. The deadline of ctx only
+// stops further ids from starting; a cancel of ctx also ends the running one.
 func upgradeEach(ctx context.Context, ids []string, run func(ctx context.Context, id string) (out string, ok bool, err error)) []AppUpgradeResult {
 	res := make([]AppUpgradeResult, 0, len(ids))
+	answerBy := appNow().Add(appAnswerBy)
 	for _, id := range ids {
 		if ctx.Err() != nil {
-			res = append(res, AppUpgradeResult{ID: id, OutputTail: "not started: time limit reached"})
+			res = append(res, AppUpgradeResult{ID: id, OutputTail: "not started: time limit reached", Status: appNotStarted})
 			continue
 		}
-		out, ok, err := run(ctx, id)
+		budget := wingetUpgradeMax
+		if left := answerBy.Sub(appNow()); left < budget {
+			budget = left
+		}
+		pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), budget)
+		stop := context.AfterFunc(ctx, func() {
+			if errors.Is(ctx.Err(), context.Canceled) {
+				cancel()
+			}
+		})
+		out, ok, err := run(pctx, id)
+		timedOut := err != nil && errors.Is(pctx.Err(), context.DeadlineExceeded)
+		if err != nil && errors.Is(pctx.Err(), context.Canceled) {
+			err = errors.New("cancelled")
+		}
+		stop()
+		cancel()
+		if timedOut {
+			res = append(res, AppUpgradeResult{ID: id, OutputTail: outputTail(out+"\n"+appTimedOutText, appTailMax), Status: appTimedOut})
+			continue
+		}
 		if err != nil {
 			out += "\n" + err.Error()
 		}
@@ -145,24 +187,35 @@ func runAppWith(ctx context.Context, attr func(*exec.Cmd), dir string, argv ...s
 	cmd.Dir = dir
 	var o, e capBuf
 	cmd.Stdout, cmd.Stderr = &o, &e
-	cmd.WaitDelay = 10 * time.Second
+	cmd.WaitDelay = pipeDrain
 	attr(cmd)
 	err = cmd.Run()
-	if err == nil && (o.over || e.over) {
-		err = errOutputTooLarge
-	}
 	code = -1
 	if cmd.ProcessState != nil {
 		code = cmd.ProcessState.ExitCode()
 	}
+	// a child left holding the pipes does not void the exit code
 	var ee *exec.ExitError
-	if errors.As(err, &ee) {
+	if errors.As(err, &ee) || errors.Is(err, exec.ErrWaitDelay) {
 		err = nil
+	}
+	stdout, stderr = o.String(), e.String()
+	// a run that ended keeps its exit code, the cut output is only noted
+	if o.over || e.over {
+		if code < 0 && err == nil {
+			err = errOutputTooLarge
+		}
+		if o.over {
+			stdout += "\n[output truncated]"
+		}
+		if e.over {
+			stderr += "\n[output truncated]"
+		}
 	}
 	if ctx.Err() != nil {
 		err = errors.New("time limit reached")
 	}
-	return o.String(), e.String(), code, err
+	return stdout, stderr, code, err
 }
 
 // appLines splits tool output into lines as a terminal would show them:
@@ -210,7 +263,11 @@ func InstallWithWinget(id string) (string, int64) {
 	defer appUpdatesMu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), wingetInstallMax)
 	defer cancel()
-	return wingetInstallResult(installWinget(ctx, id))
+	stdout, stderr, code, err := installWinget(ctx, id)
+	if err != nil && ctx.Err() != nil {
+		err = errors.New(appTimedOutText)
+	}
+	return wingetInstallResult(stdout, stderr, code, err)
 }
 
 // wingetInstallArgs: machine scope, SYSTEM has no profile worth installing
@@ -226,9 +283,26 @@ func wingetInstallResult(stdout, stderr string, code int, err error) (string, in
 		return strings.TrimLeft(out+"\n"+err.Error(), "\n"), -1
 	}
 	if code != 0 {
-		out = strings.TrimLeft(out+fmt.Sprintf("\nexit code 0x%08X", uint32(code)), "\n")
+		out = strings.TrimLeft(out+"\n"+wingetExitText(code), "\n")
 	}
 	return out, int64(uint32(code))
+}
+
+var wingetHints = map[uint32]string{
+	0x8A150111:     "an application is in use, close it",
+	0x80072EE2:     "download failed: network or server",
+	0x801901F6:     "download failed: network or server",
+	wingetNoUpdate: "already installed",
+}
+
+// wingetExitText is the exit code line, with a hint on its own line for
+// codes people meet often.
+func wingetExitText(code int) string {
+	s := fmt.Sprintf("exit code 0x%08X", uint32(code))
+	if h := wingetHints[uint32(code)]; h != "" {
+		s += "\n" + h
+	}
+	return s
 }
 
 // cells lays a line out in terminal columns; a wide rune takes two, the
@@ -349,16 +423,19 @@ func wingetRow(c []rune, cols []int) ([4]string, bool) {
 }
 
 // newestAppInstaller picks the highest version from
-// ...\WindowsApps\Microsoft.DesktopAppInstaller_<version>_<arch>__<publisher>\winget.exe
-func newestAppInstaller(paths []string) string {
-	best, bestVer := "", []int(nil)
+// ...\WindowsApps\Microsoft.DesktopAppInstaller_<version>_<arch>__<publisher>\winget.exe,
+// of the Windows architecture arch when there is one. x86 is taken only on
+// an x86 Windows.
+func newestAppInstaller(paths []string, arch string) string {
+	best, bestVer, bestOwn := "", []int(nil), false
 	for _, p := range paths {
-		parts := strings.Split(filepath.Base(filepath.Dir(p)), "_")
-		if len(parts) < 2 {
+		dir := filepath.Base(filepath.Dir(p))
+		a := appxArch(dir)
+		if a == "" || (a == "x86" && arch != "x86") {
 			continue
 		}
 		var v []int
-		for _, n := range strings.Split(parts[1], ".") {
+		for _, n := range strings.Split(strings.Split(dir, "_")[1], ".") {
 			i, err := strconv.Atoi(n)
 			if err != nil {
 				v = nil
@@ -366,11 +443,22 @@ func newestAppInstaller(paths []string) string {
 			}
 			v = append(v, i)
 		}
-		if v != nil && (best == "" || versionLess(bestVer, v)) {
-			best, bestVer = p, v
+		own := a == arch
+		if v != nil && (best == "" || (own && !bestOwn) || (own == bestOwn && versionLess(bestVer, v))) {
+			best, bestVer, bestOwn = p, v, own
 		}
 	}
 	return best
+}
+
+// appxArch is the architecture of a package folder
+// <name>_<version>_<arch>__<publisher>, "" when the name is not one.
+func appxArch(dir string) string {
+	parts := strings.Split(dir, "_")
+	if len(parts) < 5 {
+		return ""
+	}
+	return parts[2]
 }
 
 func versionLess(a, b []int) bool {

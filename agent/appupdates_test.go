@@ -4,6 +4,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func fixture(t *testing.T, name string) string {
@@ -187,11 +189,131 @@ func TestNewestAppInstaller(t *testing.T) {
 	for i := range paths {
 		paths[i] = filepath.FromSlash(strings.ReplaceAll(paths[i], `\`, "/"))
 	}
-	if got := newestAppInstaller(paths); got != paths[1] {
+	if got := newestAppInstaller(paths, "x64"); got != paths[1] {
 		t.Fatalf("got %s", got)
 	}
-	if newestAppInstaller(nil) != "" {
+	if newestAppInstaller(nil, "x64") != "" {
 		t.Fatal("empty")
+	}
+	mixed := []string{
+		filepath.Join("WindowsApps", "Microsoft.DesktopAppInstaller_1.30.1.0_x86__8wekyb3d8bbwe", "winget.exe"),
+		filepath.Join("WindowsApps", "Microsoft.DesktopAppInstaller_1.29.1.0_arm64__8wekyb3d8bbwe", "winget.exe"),
+		filepath.Join("WindowsApps", "Microsoft.DesktopAppInstaller_1.28.1.0_x64__8wekyb3d8bbwe", "winget.exe"),
+	}
+	for arch, want := range map[string]string{"x64": mixed[2], "arm64": mixed[1], "x86": mixed[0]} {
+		if got := newestAppInstaller(mixed, arch); got != want {
+			t.Errorf("%s: got %s", arch, got)
+		}
+	}
+	if got := newestAppInstaller(mixed[:1], "x64"); got != "" {
+		t.Errorf("x86 taken on a 64-bit Windows: %s", got)
+	}
+}
+
+func TestAppxArch(t *testing.T) {
+	for dir, want := range map[string]string{
+		"Microsoft.DesktopAppInstaller_1.28.1.0_x64__8wekyb3d8bbwe":          "x64",
+		"Microsoft.DesktopAppInstaller_1.28.1.0_x86__8wekyb3d8bbwe":          "x86",
+		"Microsoft.DesktopAppInstaller_1.28.1.0_arm64__8wekyb3d8bbwe":        "arm64",
+		"Microsoft.VCLibs.140.00.UWPDesktop_14.0.33728.0_x64__8wekyb3d8bbwe": "x64",
+		"winget":                                 "",
+		"Microsoft.DesktopAppInstaller_1.28.1.0": "",
+	} {
+		if got := appxArch(dir); got != want {
+			t.Errorf("%s: %q, want %q", dir, got, want)
+		}
+	}
+}
+
+func TestWingetExitText(t *testing.T) {
+	for code, want := range map[uint32]string{
+		0x8A150111: "exit code 0x8A150111\nan application is in use, close it",
+		0x80072EE2: "exit code 0x80072EE2\ndownload failed: network or server",
+		0x801901F6: "exit code 0x801901F6\ndownload failed: network or server",
+		0x8A15002B: "exit code 0x8A15002B\nalready installed",
+		0x8A150061: "exit code 0x8A150061",
+	} {
+		// winget codes reach the agent as negative ints
+		if got := wingetExitText(int(int32(code))); got != want {
+			t.Errorf("%08X: %q", code, got)
+		}
+	}
+}
+
+// Each package has its own limit: the call's deadline does not cut a running
+// one, it only keeps the next from starting.
+func TestUpgradeEachBudgets(t *testing.T) {
+	old := wingetUpgradeMax
+	defer func() { wingetUpgradeMax = old }()
+	wingetUpgradeMax = time.Minute
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	res := upgradeEach(ctx, []string{"a", "b"}, func(ctx context.Context, id string) (string, bool, error) {
+		select {
+		case <-ctx.Done():
+			return "", false, errors.New("time limit reached")
+		case <-time.After(100 * time.Millisecond):
+			return "done", true, nil
+		}
+	})
+	if len(res) != 2 || !res[0].OK || res[0].Status != "" || res[1].OK || res[1].Status != appNotStarted {
+		t.Fatalf("call deadline: %+v", res)
+	}
+
+	wingetUpgradeMax = 20 * time.Millisecond
+	res = upgradeEach(context.Background(), []string{"slow"}, func(ctx context.Context, id string) (string, bool, error) {
+		<-ctx.Done()
+		return "Downloading", false, errors.New("time limit reached")
+	})
+	if len(res) != 1 || res[0].OK || res[0].Status != appTimedOut || res[0].OutputTail != "Downloading\n"+appTimedOutText {
+		t.Fatalf("package limit: %+v", res)
+	}
+
+	// a cancel, unlike the deadline, ends the running package; it is not a
+	// time limit
+	wingetUpgradeMax = time.Minute
+	cctx, ccancel := context.WithCancel(context.Background())
+	start := time.Now()
+	res = upgradeEach(cctx, []string{"a"}, func(ctx context.Context, id string) (string, bool, error) {
+		ccancel()
+		select {
+		case <-ctx.Done():
+		case <-time.After(5 * time.Second):
+		}
+		return "", false, errors.New("time limit reached")
+	})
+	if time.Since(start) > 2*time.Second {
+		t.Fatal("cancel did not reach the package")
+	}
+	if len(res) != 1 || res[0].OK || res[0].Status != "" || !strings.HasSuffix(res[0].OutputTail, "cancelled") {
+		t.Fatalf("cancel: %+v", res)
+	}
+}
+
+// A package that starts last still ends before the server stops waiting.
+func TestUpgradeEachAnswersInTime(t *testing.T) {
+	oldNow, oldMax := appNow, wingetUpgradeMax
+	defer func() { appNow, wingetUpgradeMax = oldNow, oldMax }()
+	lateBudget := func() time.Duration {
+		clock := time.Now()
+		appNow = func() time.Time { return clock }
+		var late time.Duration
+		upgradeEach(context.Background(), []string{"first", "late"}, func(ctx context.Context, id string) (string, bool, error) {
+			dl, _ := ctx.Deadline()
+			late = time.Until(dl)
+			// the first package runs until just before appUpgradeMax
+			clock = clock.Add(569 * time.Second)
+			return "", true, nil
+		})
+		return late
+	}
+	if b := lateBudget(); b > 1201*time.Second || b < 1190*time.Second {
+		t.Fatalf("real limits: %v", b)
+	}
+	// a longer own limit is cut to what is left
+	wingetUpgradeMax = time.Hour
+	if b := lateBudget(); b > 1201*time.Second || b < 1195*time.Second {
+		t.Fatalf("cut limit: %v", b)
 	}
 }
 

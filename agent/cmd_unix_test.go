@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -245,9 +246,10 @@ func TestRunTaskActions(t *testing.T) {
 		t.Fatalf("stop on stderr: %+v", res)
 	}
 
+	// the failed step still fails the task
 	task.KeepGoing = true
 	res = a.runTaskActions(task)
-	if !strings.Contains(res.Stdout, "Running Script: two") || !strings.HasSuffix(res.Stdout, "two\n") || res.Retcode != 0 {
+	if !strings.Contains(res.Stdout, "Running Script: two") || !strings.HasSuffix(res.Stdout, "two\n") || res.Retcode != 4 {
 		t.Fatalf("continue on error: %+v", res)
 	}
 
@@ -264,6 +266,41 @@ func TestRunTaskActions(t *testing.T) {
 	single := a.runTaskActions(rmm.TaskDef{Steps: []rmm.TaskStep{script("s", "#!/bin/sh\necho s")}})
 	if single.Stdout != "s\n" {
 		t.Fatalf("a single action has no header: %q", single.Stdout)
+	}
+
+	// all steps together keep what one step keeps
+	oh, ot := cmdKeepHead, cmdKeepTail
+	cmdKeepHead, cmdKeepTail = 200, 200
+	defer func() { cmdKeepHead, cmdKeepTail = oh, ot }()
+	step := script("many", "#!/bin/sh\nfor i in 1 2 3 4 5 6 7 8 9 10 11 12; do echo line$i; done\necho e >&2")
+	task = rmm.TaskDef{KeepGoing: true, Steps: []rmm.TaskStep{step, step, step, step, step, step, step, step, step, step}}
+	res = a.runTaskActions(task)
+	if len(res.Stdout) > 500 || !strings.Contains(res.Stdout, "left out") || !strings.HasSuffix(res.Stdout, "line12\n") || res.Stderr != "e\ne\ne\ne\ne\ne\ne\ne\ne\ne\n" {
+		t.Fatalf("joined output %d bytes: %+v", len(res.Stdout), res)
+	}
+}
+
+// Steps that each fit but together do not leave one marker that counts
+// every byte left out.
+func TestRunTaskActionsOneMarker(t *testing.T) {
+	a := testUpdateAgent()
+	oh, ot := cmdKeepHead, cmdKeepTail
+	cmdKeepHead, cmdKeepTail = 20, 20
+	defer func() { cmdKeepHead, cmdKeepTail = oh, ot }()
+	var steps []rmm.TaskStep
+	want := ""
+	for _, n := range []string{"1", "2", "3"} {
+		want += "e" + n + "-aaaa\ne" + n + "-bbbb\ne" + n + "-cccc\n"
+		steps = append(steps, rmm.TaskStep{Kind: "cmd", Interp: "/bin/sh", Cmd: "printf 'e" + n + "-aaaa\\ne" + n + "-bbbb\\ne" + n + "-cccc\\n' >&2", TimeoutSec: 10})
+	}
+	res := a.runTaskActions(rmm.TaskDef{KeepGoing: true, Steps: steps})
+	m := regexp.MustCompile(`\[\.\.\. (\d+) bytes of output left out \.\.\.\]\n`).FindAllStringSubmatch(res.Stderr, -1)
+	if len(m) != 1 {
+		t.Fatalf("markers: %q", res.Stderr)
+	}
+	left, _ := strconv.Atoi(m[0][1])
+	if kept := len(res.Stderr) - len(m[0][0]); kept+left != len(want) || !strings.HasPrefix(res.Stderr, "e1-aaaa\n") || !strings.HasSuffix(res.Stderr, "e3-cccc\n") {
+		t.Fatalf("kept %d + left out %d != %d: %q", kept, left, len(want), res.Stderr)
 	}
 }
 

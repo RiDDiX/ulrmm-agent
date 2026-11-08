@@ -10,13 +10,14 @@ import (
 )
 
 // writeFileSynced replaces path through a synced temp file: a power cut
-// leaves the old content or the new one, never a cut file.
+// leaves the old content or the new one, never a cut file. The temp name is
+// unique, two processes writing the same path do not mix their bytes.
 func writeFileSynced(path string, b []byte, mode os.FileMode) error {
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
 	if err != nil {
 		return err
 	}
+	tmp := f.Name()
 	defer os.Remove(tmp)
 	if _, err = f.Write(b); err == nil {
 		err = f.Sync()

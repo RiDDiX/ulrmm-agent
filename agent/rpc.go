@@ -100,11 +100,13 @@ const histResultURL = "/api/v3/%d/%s/histresult/"
 // postWingetResult closes the pending action of a winget install.
 func (a *Agent) postWingetResult(pk int, out string, code int64) error {
 	url := fmt.Sprintf("/api/v4/%s/%d/wingetresult/", a.AgentID, pk)
-	r, err := a.rClient.R().SetBody(map[string]interface{}{"results": out, "exit_code": code}).Patch(url)
-	if err == nil && r.IsError() {
-		err = fmt.Errorf("server answered %d", r.StatusCode())
-	}
-	return err
+	return a.patchWithRetry(url, map[string]interface{}{"results": out, "exit_code": code}, pkgRetryWait)
+}
+
+// postChocoResult closes the pending action of a choco install.
+func (a *Agent) postChocoResult(pk int, out string) error {
+	url := fmt.Sprintf("/api/v4/%s/%d/chocoresult/", a.AgentID, pk)
+	return a.patchWithRetry(url, rmm.CmdOutput{Text: out}, pkgRetryWait)
 }
 
 // notRunnable is why the service cannot start, "" when it can. A token
@@ -195,7 +197,8 @@ func (r *rpcReq) reply(v interface{}) {
 }
 
 // Runs on the subscription's goroutine: decode, then hand off. Terminal
-// requests keep their order, everything else runs concurrently.
+// requests keep their order, everything else runs concurrently, the heavy
+// ones and the probes each in a pool of their own.
 func (a *Agent) dispatch(nc *nats.Conn, msg *nats.Msg) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -221,7 +224,43 @@ func (a *Agent) dispatch(nc *nats.Conn, msg *nats.Msg) {
 		a.queueTerminal(req)
 		return
 	}
-	go req.run()
+	go runBounded(p.Func, req.run, func() { req.reply("agent busy, try again") })
+}
+
+// heavyRPC funcs start a process or build a large answer; a burst of them
+// would starve the agent. The read-only probes get a pool of their own, so
+// long scripts cannot keep them waiting.
+var (
+	heavyRPC   = map[string]bool{"runscript": true, "runscriptfull": true, "rawcmd": true}
+	probeRPC   = map[string]bool{"eventlog": true, "softwarelist": true, "procs": true, "wmi": true}
+	heavySlots = make(chan struct{}, 16)
+	probeSlots = make(chan struct{}, 8)
+	// longer than this and the caller has likely given up; tests shorten it
+	slotWait = 30 * time.Second
+)
+
+// runBounded runs run, for a heavy fn or a probe once a slot of its pool is
+// free. When none frees up within slotWait, busy answers instead and run
+// does not run. Callers start it in a goroutine, so the wait never holds
+// the subscription.
+func runBounded(fn string, run, busy func()) {
+	slots := heavySlots
+	switch {
+	case probeRPC[fn]:
+		slots = probeSlots
+	case !heavyRPC[fn]:
+		run()
+		return
+	}
+	t := time.NewTimer(slotWait)
+	defer t.Stop()
+	select {
+	case slots <- struct{}{}:
+		defer func() { <-slots }()
+		run()
+	case <-t.C:
+		busy()
+	}
 }
 
 // Terminal requests of one session run in arrival order on their own
@@ -468,9 +507,8 @@ func (r *rpcReq) run() {
 				out = err.Error()
 			}
 		}
-		url := fmt.Sprintf("/api/v4/%s/%d/chocoresult/", a.AgentID, p.PendingActionPK)
-		if _, err := a.rClient.R().SetBody(rmm.CmdOutput{Text: out}).Patch(url); err != nil {
-			a.Logger.Debugln("chocoresult:", err)
+		if err := a.postChocoResult(p.PendingActionPK, out); err != nil {
+			a.Logger.Errorln("chocoresult:", err)
 		}
 
 	case "getwinupdates":

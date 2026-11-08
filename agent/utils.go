@@ -419,12 +419,30 @@ func safeJoin(dest, name string) (string, error) {
 	return p, nil
 }
 
+// What Unzip writes at most; the runtimes it unpacks stay far below. Tests
+// lower the size.
+var unzipMax = uint64(pkgExtractMax)
+
+const unzipEntriesMax = 100000
+
+// Unzip checks the sizes in the headers before it writes; archive/zip fails
+// an entry that holds more than its header says.
 func Unzip(src, dest string) error {
 	zr, err := zip.OpenReader(src)
 	if err != nil {
 		return err
 	}
 	defer zr.Close()
+	if len(zr.File) > unzipEntriesMax {
+		return fmt.Errorf("the archive has more than %d entries", unzipEntriesMax)
+	}
+	var total uint64
+	for _, f := range zr.File {
+		if f.UncompressedSize64 > unzipMax-total {
+			return fmt.Errorf("the archive unpacks to more than %s", ByteCountSI(unzipMax))
+		}
+		total += f.UncompressedSize64
+	}
 	for _, f := range zr.File {
 		if err := unzipEntry(f, dest); err != nil {
 			return err

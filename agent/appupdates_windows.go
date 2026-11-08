@@ -5,6 +5,7 @@ package agent
 
 import (
 	"context"
+	"debug/pe"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
@@ -30,7 +32,7 @@ func wingetPath() (string, error) {
 		pf = os.Getenv("ProgramFiles")
 	}
 	m, _ := filepath.Glob(filepath.Join(pf, "WindowsApps", "Microsoft.DesktopAppInstaller_*", "winget.exe"))
-	if p := newestAppInstaller(m); p != "" {
+	if p := newestAppInstaller(m, windowsAppxArch()); p != "" {
 		return p, nil
 	}
 	// no PATH fallback: a user-writable PATH entry would run as SYSTEM
@@ -40,7 +42,9 @@ func wingetPath() (string, error) {
 // runWinget runs winget as SYSTEM and, when retry finds no usable answer in
 // that, once more as the signed-in user.
 func runWinget(ctx context.Context, wg string, retry func(stdout string, code int, err error) bool, args ...string) (stdout, stderr string, code int, err error) {
+	start := time.Now()
 	stdout, stderr, code, err = runAppWith(ctx, wingetSystemAttr(wg), filepath.Dir(wg), append([]string{wg}, args...)...)
+	logWinget("system", wg, start, code, err)
 	if ctx.Err() == nil && retry(stdout, code, err) {
 		return runWingetAsUser(ctx, wg, args...)
 	}
@@ -75,18 +79,50 @@ func runWingetAsUser(ctx context.Context, pkgExe string, args ...string) (stdout
 		appCmdAttr(cmd)
 		cmd.SysProcAttr.Token = syscall.Token(tok.Token())
 	}
+	start := time.Now()
 	stdout, stderr, code, err = runAppWith(ctx, asUser, dir, append([]string{exe}, args...)...)
+	logWinget("user", exe, start, code, err)
 	if aliasH != 0 {
 		windows.CloseHandle(aliasH)
 		// the alias did not start (no exit code): once more with the package exe
 		if err != nil && code == -1 && ctx.Err() == nil {
+			start = time.Now()
 			stdout, stderr, code, err = runAppWith(ctx, asUser, dir, append([]string{pkgExe}, args...)...)
+			logWinget("user", pkgExe, start, code, err)
 		}
 	}
 	if err != nil {
 		err = fmt.Errorf("winget as user: %v", err)
 	}
 	return stdout, stderr, code, err
+}
+
+func logWinget(as, exe string, start time.Time, code int, err error) {
+	if a := frameAgent.Load(); a != nil {
+		a.Logger.Debugf("winget as %s: %s, exit code 0x%08X after %v, error %v", as, exe, uint32(code), time.Since(start).Round(time.Millisecond), err)
+	}
+}
+
+// windowsAppxArch is the package architecture of this Windows, also for the
+// 386 build on a 64-bit one.
+func windowsAppxArch() string {
+	var proc, native uint16
+	if windows.IsWow64Process2(windows.CurrentProcess(), &proc, &native) == nil {
+		switch native {
+		case pe.IMAGE_FILE_MACHINE_AMD64:
+			return "x64"
+		case pe.IMAGE_FILE_MACHINE_ARM64:
+			return "arm64"
+		case pe.IMAGE_FILE_MACHINE_I386:
+			return "x86"
+		}
+	}
+	// before Windows 10 1511 there is no IsWow64Process2 and no ARM
+	var wow64 bool
+	if runtime.GOARCH == "amd64" || windows.IsWow64Process(windows.CurrentProcess(), &wow64) == nil && wow64 {
+		return "x64"
+	}
+	return "x86"
 }
 
 // wingetAlias: path is an App Execution Alias that starts an exe of the App
@@ -149,7 +185,7 @@ func upgradeApps(ctx context.Context, source string, ids []string) ([]AppUpgrade
 			"--include-unknown", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity")
 		out := stdout + "\n" + stderr
 		if err == nil && code != 0 {
-			out += fmt.Sprintf("\nexit code 0x%08X", uint32(code))
+			out += "\n" + wingetExitText(code)
 		}
 		// already current, or installed and waiting for a reboot
 		return out, code == 0 || uint32(code) == wingetNoUpdate || uint32(code) == wingetReboot, err
@@ -169,9 +205,10 @@ func installWinget(ctx context.Context, id string) (stdout, stderr string, code 
 // it winget runs without a signed-in user. WindowsApps is writable only by
 // TrustedInstaller, so the extra PATH entries cannot be planted.
 func wingetSystemAttr(wg string) func(*exec.Cmd) {
-	arch := map[string]string{"amd64": "x64", "386": "x86", "arm64": "arm64"}[runtime.GOARCH]
+	// the runtime winget was built for, not the one of the agent build
+	arch := appxArch(filepath.Base(filepath.Dir(wg)))
 	m, _ := filepath.Glob(filepath.Join(filepath.Dir(filepath.Dir(wg)), "Microsoft.VCLibs.140.00.UWPDesktop_*_"+arch+"__8wekyb3d8bbwe", "*.dll"))
-	vc := newestAppInstaller(m)
+	vc := newestAppInstaller(m, arch)
 	return func(cmd *exec.Cmd) {
 		appCmdAttr(cmd)
 		if vc == "" {
