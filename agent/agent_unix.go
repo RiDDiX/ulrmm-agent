@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -391,7 +392,12 @@ func (a *Agent) GetWMIInfo() map[string]interface{} {
 func filterLocalIPs(ips []string) []string {
 	ret := []string{}
 	for _, ip := range ips {
-		if !strings.Contains(ip, "127.0.") && !strings.Contains(ip, "::1/128") {
+		pfx, err := netip.ParsePrefix(ip)
+		addr := pfx.Addr()
+		if err != nil {
+			addr, err = netip.ParseAddr(ip)
+		}
+		if err != nil || !addr.IsLoopback() {
 			ret = append(ret, ip)
 		}
 	}

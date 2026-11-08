@@ -58,6 +58,9 @@ func (a *Agent) Install(i *Installer) {
 	}
 	// a reinstall must not present the previous agent's certificate
 	a.clientCert.Store(nil)
+	if removeFirst {
+		removeExisting(a, i.Silent)
+	}
 
 	auth := "Token " + i.Token
 	if i.Enroll != "" {
@@ -126,7 +129,9 @@ func (a *Agent) Install(i *Installer) {
 		return
 	}
 	// only now: a refused token or no network keeps the old install
-	removeExisting(a, i.Silent)
+	if !removeFirst {
+		removeExisting(a, i.Silent)
+	}
 
 	rClient := client(i.Timeout)
 	var meshNodeID string
@@ -214,10 +219,13 @@ func (a *Agent) Install(i *Installer) {
 	a.installerMsg("Installation was successful!\nAllow a few minutes for the agent to properly display in the RMM", "info", i.Silent)
 }
 
-// fstabPath and removeExisting are variables for the tests.
+// fstabPath, removeExisting and removeFirst are variables for the tests.
 var (
 	fstabPath      = "/etc/fstab"
 	removeExisting = (*Agent).checkExistingAndRemove
+	// on Windows that removes nothing, it stops a second install before the
+	// token is looked at
+	removeFirst = runtime.GOOS == "windows"
 )
 
 // MeshCentral's FreeBSD agent refuses to run without procfs on /proc, which

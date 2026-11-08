@@ -5,6 +5,7 @@ package agent
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -72,10 +73,18 @@ func (w windowsHeal) restartService() error {
 	return s.Start()
 }
 
-func (windowsHeal) registerSchedule(healBin string) error {
-	tr := fmt.Sprintf(`"%s" -m selfheal`, healBin)
-	out, err := healCmd(time.Minute, "schtasks.exe", "/Create", "/F", "/RU", "SYSTEM", "/RL", "HIGHEST",
-		"/SC", "MINUTE", "/MO", "15", "/TN", healTaskName(), "/TR", tr)
+// /F replaces the task an earlier build made with schtasks /SC.
+func (w windowsHeal) registerSchedule(healBin string) error {
+	// the definition goes where only admins can write: it says what SYSTEM runs
+	if err := createWinTempDir(); err != nil {
+		return err
+	}
+	def := filepath.Join(w.a.WinTmpDir, "selfheal-task.xml")
+	if err := os.WriteFile(def, healTaskXML(healBin), 0o600); err != nil {
+		return err
+	}
+	defer os.Remove(def)
+	out, err := healCmd(time.Minute, "schtasks.exe", "/Create", "/F", "/TN", healTaskName(), "/XML", def)
 	if err != nil {
 		return fmt.Errorf("schtasks: %v: %s", err, out)
 	}

@@ -169,9 +169,14 @@ func writeConfFile(conf map[string]interface{}, create bool) error {
 	}
 	if create {
 		// link fails on an existing name: the create is exclusive and atomic
-		return os.Link(tmp, etcConfig)
+		err = os.Link(tmp, etcConfig)
+	} else {
+		err = os.Rename(tmp, etcConfig)
 	}
-	return os.Rename(tmp, etcConfig)
+	if err == nil {
+		syncDir(filepath.Dir(etcConfig))
+	}
+	return err
 }
 
 // createAgentConfig writes the config of a fresh install. The values come

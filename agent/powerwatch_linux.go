@@ -224,7 +224,7 @@ func refreshUnit() {
 	if err != nil || !strings.Contains(string(b), "KillMode=process\n") {
 		return
 	}
-	if s := upgradeUnit(string(b)); s != string(b) && os.WriteFile(path, []byte(s), 0o644) == nil {
+	if s := upgradeUnit(string(b)); s != string(b) && writeFileSynced(path, []byte(s), 0o644) == nil {
 		_, _ = healCmd(time.Minute, "systemctl", "daemon-reload")
 	}
 }

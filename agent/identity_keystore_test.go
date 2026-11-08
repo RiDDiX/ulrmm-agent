@@ -6,6 +6,7 @@
 package agent
 
 import (
+	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
@@ -86,5 +87,38 @@ func TestRotateIdentityKeystoreFailsOnce(t *testing.T) {
 	}
 	if n, _ := confValue(confIdentityNext); n != next {
 		t.Fatal("the pending seed was replaced")
+	}
+}
+
+// A refresh token the keystore cannot open now is still there: no grant.
+// One that does not open at all is none.
+func TestHaveRefreshKeystoreFailsOnce(t *testing.T) {
+	a, failOnce := credsHostAgent(t)
+	if a.haveRefresh() {
+		t.Error("none stored")
+	}
+	if err := protect(confRefresh, []byte("r")); err != nil {
+		t.Fatal(err)
+	}
+	failOnce()
+	if !a.haveRefresh() {
+		t.Error("a keystore that does not open once dropped the refresh token")
+	}
+	_ = setConfValues(map[string]string{confRefresh: wrapKEK + "broken"})
+	if a.haveRefresh() {
+		t.Error("an unreadable refresh token counts")
+	}
+}
+
+// A DPAPI seed copied to another system is replaced like any unreadable one.
+func TestLoadIdentityReplacesForeignDPAPI(t *testing.T) {
+	a := keystoreHost(t, "freebsd")
+	blob := wrapDPAPI + base64.StdEncoding.EncodeToString([]byte("blob"))
+	_ = setConfValues(map[string]string{confIdentityKey: blob})
+	if a.loadIdentity() == nil {
+		t.Fatal("the seed was not replaced")
+	}
+	if s, _ := confValue(confIdentityKey); s == blob {
+		t.Error("the DPAPI seed is still stored")
 	}
 }

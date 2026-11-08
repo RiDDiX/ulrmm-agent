@@ -109,7 +109,8 @@ func rmmTestAgent(t *testing.T) *Agent {
 	a.AgentID, a.ApiURL = "agent-1", "127.0.0.1"
 	old := etcConfig
 	etcConfig = filepath.Join(t.TempDir(), "none", "conf")
-	t.Cleanup(func() { etcConfig = old })
+	// a pin refresh started by the test may still be writing under confTrust
+	t.Cleanup(func() { confTrust.Lock(); etcConfig = old; confTrust.Unlock() })
 	return a
 }
 

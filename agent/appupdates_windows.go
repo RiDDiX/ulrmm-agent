@@ -62,18 +62,27 @@ func runWingetAsUser(ctx context.Context, pkgExe string, args ...string) (stdout
 	}
 	defer tok.Close()
 	exe, dir := pkgExe, filepath.Dir(pkgExe)
+	var aliasH windows.Handle
 	if home, err := tok.Token().GetUserProfileDirectory(); err == nil {
 		dir = home
 		alias := filepath.Join(home, "AppData", "Local", "Microsoft", "WindowsApps", "winget.exe")
-		if wingetAlias(alias, filepath.Dir(filepath.Dir(pkgExe))) {
-			exe = alias
+		if h, ok := wingetAlias(alias, filepath.Dir(filepath.Dir(pkgExe))); ok {
+			exe, aliasH = alias, h
 		}
 	}
 	// Env stays nil: os/exec builds the user's environment from the token
-	stdout, stderr, code, err = runAppWith(ctx, func(cmd *exec.Cmd) {
+	asUser := func(cmd *exec.Cmd) {
 		appCmdAttr(cmd)
 		cmd.SysProcAttr.Token = syscall.Token(tok.Token())
-	}, dir, append([]string{exe}, args...)...)
+	}
+	stdout, stderr, code, err = runAppWith(ctx, asUser, dir, append([]string{exe}, args...)...)
+	if aliasH != 0 {
+		windows.CloseHandle(aliasH)
+		// the alias did not start (no exit code): once more with the package exe
+		if err != nil && code == -1 && ctx.Err() == nil {
+			stdout, stderr, code, err = runAppWith(ctx, asUser, dir, append([]string{pkgExe}, args...)...)
+		}
+	}
 	if err != nil {
 		err = fmt.Errorf("winget as user: %v", err)
 	}
@@ -82,30 +91,33 @@ func runWingetAsUser(ctx context.Context, pkgExe string, args ...string) (stdout
 
 // wingetAlias: path is an App Execution Alias that starts an exe of the App
 // Installer package. The folder is the user's own, so anything else there
-// could be planted and would run with the elevated token.
-func wingetAlias(path, windowsApps string) bool {
+// could be planted and would run with the elevated token. The returned
+// handle shares neither write nor delete: while it is open the alias cannot
+// be replaced or renamed. The caller closes it.
+func wingetAlias(path, windowsApps string) (windows.Handle, bool) {
 	// Lstat: the alias is a reparse point Stat cannot follow
 	fi, err := os.Lstat(path)
 	if err != nil || fi.Mode().IsRegular() || fi.Mode()&os.ModeSymlink != 0 {
-		return false
+		return 0, false
 	}
 	p, err := windows.UTF16PtrFromString(path)
 	if err != nil {
-		return false
+		return 0, false
 	}
-	h, err := windows.CreateFile(p, 0, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil,
+	h, err := windows.CreateFile(p, windows.GENERIC_READ, windows.FILE_SHARE_READ, nil,
 		windows.OPEN_EXISTING, windows.FILE_FLAG_OPEN_REPARSE_POINT|windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
 	if err != nil {
-		return false
+		return 0, false
 	}
-	defer windows.CloseHandle(h)
 	buf := make([]byte, windows.MAXIMUM_REPARSE_DATA_BUFFER_SIZE)
 	var n uint32
-	if windows.DeviceIoControl(h, windows.FSCTL_GET_REPARSE_POINT, nil, 0, &buf[0], uint32(len(buf)), &n, nil) != nil {
-		return false
+	if windows.DeviceIoControl(h, windows.FSCTL_GET_REPARSE_POINT, nil, 0, &buf[0], uint32(len(buf)), &n, nil) == nil {
+		if target, ok := appExecLinkTarget(buf[:n]); ok && inAppInstaller(target, windowsApps) {
+			return h, true
+		}
 	}
-	target, ok := appExecLinkTarget(buf[:n])
-	return ok && inAppInstaller(target, windowsApps)
+	windows.CloseHandle(h)
+	return 0, false
 }
 
 func listAppUpdates(ctx context.Context) ([]AppUpdate, error) {

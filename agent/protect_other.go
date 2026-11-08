@@ -7,7 +7,7 @@ package agent
 
 import (
 	"encoding/base64"
-	"errors"
+	"fmt"
 )
 
 func legacyWrap(b []byte) (string, error) {
@@ -15,5 +15,5 @@ func legacyWrap(b []byte) (string, error) {
 }
 
 func unprotectDPAPI([]byte) ([]byte, error) {
-	return nil, errors.New("a DPAPI secret cannot be opened on this system")
+	return nil, fmt.Errorf("%w: a DPAPI secret cannot be opened on this system", errUnwrap)
 }

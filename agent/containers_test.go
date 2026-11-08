@@ -101,6 +101,35 @@ func TestDockerItems(t *testing.T) {
 	}
 }
 
+// a check finds a container past the push cap; only pushed ones are inspected
+func TestDockerItemsPastCap(t *testing.T) {
+	var inspects atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/containers/json" {
+			list := make([]string, ctrMax+2)
+			for i := range list {
+				list[i] = fmt.Sprintf(`{"Id":"%064x","Names":["/c%d"],"State":"running"}`, i, i)
+			}
+			io.WriteString(w, "["+strings.Join(list, ",")+"]")
+			return
+		}
+		inspects.Add(1)
+		io.WriteString(w, "{}")
+	}))
+	defer ts.Close()
+
+	items, err := dockerItems(context.Background(), ts.Client(), ts.URL, "docker", false)
+	if err != nil || len(items) != ctrMax+2 || inspects.Load() != ctrMax {
+		t.Fatalf("%d items, %d inspects, %v", len(items), inspects.Load(), err)
+	}
+	ct := newContainers()
+	ct.source("docker", nil)
+	ct.Items = items
+	if s, info := containerVerdict(rmm.CheckDef{Container: fmt.Sprintf("c%d", ctrMax+1)}, ct); s != "passing" {
+		t.Fatal(s, info)
+	}
+}
+
 func TestContainerSources(t *testing.T) {
 	ct := newContainers()
 	ct.source("docker", nil)

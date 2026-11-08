@@ -321,8 +321,36 @@ func TestHungAgentIsRestarted(t *testing.T) {
 		t.Fatalf("fresh heartbeat triggered %v", a)
 	}
 	f.now = f.now.Add(45 * time.Minute)
+	if a := f.h.run(); len(a) != 0 || f.p.restarts != 0 {
+		t.Fatalf("first stale sight, the agent may just have woken: %v", a)
+	}
+	f.now = f.now.Add(5 * time.Minute)
+	if a := f.h.run(); len(a) != 0 || f.p.restarts != 0 {
+		t.Fatalf("stale for less than %v: %v", healStaleConfirm, a)
+	}
+	f.now = f.now.Add(10 * time.Minute)
 	if a := f.h.run(); len(a) != 1 || f.p.restarts != 1 {
-		t.Fatalf("stale heartbeat: %v", a)
+		t.Fatalf("still stale on a later run: %v", a)
+	}
+}
+
+// The heal at wake finds the old heartbeat; the agent writes a new one
+// before the next run, so nothing is restarted.
+func TestStaleHeartbeatAtWakeIsNotHung(t *testing.T) {
+	f := newHealFixture(t)
+	_ = f.h.setup(f.main)
+	f.now = f.now.Add(8 * time.Hour)
+	if a := f.h.run(); len(a) != 0 {
+		t.Fatalf("heal at wake: %v", a)
+	}
+	f.h.heartbeat()
+	f.now = f.now.Add(15 * time.Minute)
+	if a := f.h.run(); len(a) != 0 {
+		t.Fatalf("fresh heartbeat after the wake: %v", a)
+	}
+	f.now = f.now.Add(45 * time.Minute)
+	if a := f.h.run(); len(a) != 0 || f.p.restarts != 0 {
+		t.Fatalf("an old stale sight counted for a new one: %v", a)
 	}
 }
 
@@ -341,6 +369,8 @@ func TestRestoredServiceIsNotHung(t *testing.T) {
 		t.Fatalf("the timer right after the restore: %v, %d restarts", a, f.p.restarts)
 	}
 	f.now = f.now.Add(45 * time.Minute)
+	f.h.run()
+	f.now = f.now.Add(15 * time.Minute)
 	if a := f.h.run(); len(a) != 1 || f.p.restarts != 1 {
 		t.Fatalf("no heartbeat since the restore: %v", a)
 	}

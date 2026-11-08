@@ -43,7 +43,7 @@ var awakeStateDir = func() string {
 	return filepath.Dir(exe)
 }
 
-func powercfg(args ...string) (string, error) {
+var powercfg = func(args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	return runOut(ctx, powercfgExe(), args...)
@@ -62,7 +62,12 @@ var holdLid = func(st *awakeState) error {
 			return err
 		}
 	}
-	return setLid("0", "0")
+	if err := setLid("0", "0"); err != nil {
+		// AC may already be 0 and nothing is saved yet to undo it later
+		_ = setLid(lidIndexArg(st.LidAC), lidIndexArg(st.LidDC))
+		return err
+	}
+	return nil
 }
 
 var undoLid = func(st awakeState) error {

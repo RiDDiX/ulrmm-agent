@@ -24,6 +24,7 @@ import (
 
 const (
 	healStaleAfter   = 30 * time.Minute
+	healStaleConfirm = 10 * time.Minute
 	healMaxRepairs   = 3
 	healRepairWindow = 24 * time.Hour
 )
@@ -36,6 +37,9 @@ type healManifest struct {
 
 type healState struct {
 	Repairs []time.Time `json:"repairs"`
+	// first run that found the heartbeat stale; a run right after a wake
+	// can come before the agent wrote a new one
+	StaleSince time.Time `json:"stale_since,omitzero"`
 }
 
 // healDownload is what the server says the current build for this agent is.
@@ -203,6 +207,10 @@ func (h *healer) run() []string {
 		}
 	}
 
+	stale := h.heartbeatStale()
+	if !stale {
+		st.StaleSince = time.Time{}
+	}
 	installed, running := h.p.serviceState()
 	switch {
 	case !installed:
@@ -223,12 +231,15 @@ func (h *healer) run() []string {
 				restarted = true
 			}
 		}
-	case !restarted && h.heartbeatStale():
-		if repair("agent hung") {
+	case !restarted && stale:
+		if st.StaleSince.IsZero() || h.now().Before(st.StaleSince) {
+			st.StaleSince = h.now()
+		} else if h.now().Sub(st.StaleSince) >= healStaleConfirm && repair("agent hung") {
 			if err := h.p.restartService(); err != nil {
 				h.logf("selfheal: restarting the hung agent failed: %v", err)
 			} else {
 				actions = append(actions, "agent main loop stopped responding: restarted")
+				st.StaleSince = time.Time{}
 			}
 		}
 	}
@@ -236,6 +247,7 @@ func (h *healer) run() []string {
 	if restarted {
 		// the agent just started; its heartbeat from before (an update, a reboot) says nothing
 		h.heartbeat()
+		st.StaleSince = time.Time{}
 	}
 	_ = writeJSON(h.statePath(), st)
 	if len(actions) > 0 && h.report != nil {
@@ -386,6 +398,7 @@ func copyFileAtomic(src, dst string, mode os.FileMode) error {
 		os.Remove(tmp)
 		return err
 	}
+	syncDir(filepath.Dir(dst))
 	return os.Chmod(dst, mode)
 }
 
@@ -405,9 +418,5 @@ func writeJSON(path string, v interface{}) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return writeFileSynced(path, b, 0o600)
 }

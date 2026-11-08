@@ -609,23 +609,30 @@ func (a *Agent) RecoverMesh() {
 	a.SyncMeshNodeID(true)
 }
 
+// the service start and the installpython RPC share PyBaseDir.new/.old
+var pythonMu sync.Mutex
+
 // Bundled Python the checks and some scripts use.
 func (a *Agent) GetPython(force bool) {
+	pythonMu.Lock()
+	defer pythonMu.Unlock()
 	if rmm.FileExists(a.PyBin) && !force {
 		return
 	}
-	// a forced or broken install starts from an empty python directory
-	if err := os.RemoveAll(a.PyBaseDir); err != nil {
-		a.Logger.Debugln("GetPython():", err)
-	}
-	runtimeInstallDelay()
-	if err := os.MkdirAll(a.PyBaseDir, 0o755); err != nil {
+	if err := createWinTempDir(); err != nil {
 		a.Logger.Errorln("GetPython():", err)
 		return
 	}
+	runtimeInstallDelay()
+	// the old python directory stays until a complete new one is unpacked
+	tmp, err := os.MkdirTemp(a.WinTmpDir, "pytemp")
+	if err != nil {
+		a.Logger.Errorln("GetPython():", err)
+		return
+	}
+	defer os.RemoveAll(tmp)
 	zipName := a.PyDir + ".zip"
-	zipPath := filepath.Join(a.PyBaseDir, zipName)
-	defer os.Remove(zipPath)
+	zipPath := filepath.Join(tmp, zipName)
 	if err := a.runtimeDownload(pythonZipURL(BrandPyURL, a.BaseURL, zipName), zipPath); err != nil {
 		a.Logger.Errorln("GetPython(): download:", err)
 		return
@@ -634,9 +641,27 @@ func (a *Agent) GetPython(force bool) {
 		a.Logger.Errorln("GetPython():", err)
 		return
 	}
-	if err := Unzip(zipPath, a.PyBaseDir); err != nil {
+	newDir, oldDir := a.PyBaseDir+".new", a.PyBaseDir+".old"
+	_ = os.RemoveAll(newDir)
+	_ = os.RemoveAll(oldDir)
+	if err := Unzip(zipPath, newDir); err != nil {
+		_ = os.RemoveAll(newDir)
 		a.Logger.Errorln("GetPython(): unzip:", err)
+		return
 	}
+	// renaming fails as a whole while python runs; RemoveAll could leave half an install
+	if err := os.Rename(a.PyBaseDir, oldDir); err != nil && !os.IsNotExist(err) {
+		_ = os.RemoveAll(newDir)
+		a.Logger.Errorln("GetPython():", err)
+		return
+	}
+	if err := os.Rename(newDir, a.PyBaseDir); err != nil {
+		_ = os.Rename(oldDir, a.PyBaseDir)
+		_ = os.RemoveAll(newDir)
+		a.Logger.Errorln("GetPython():", err)
+		return
+	}
+	_ = os.RemoveAll(oldDir)
 }
 
 func (a *Agent) InstallNushell(force bool) {

@@ -19,12 +19,18 @@ import (
 var (
 	errWMITimeout = errors.New("wmi query timed out")
 	errWMIBusy    = errors.New("an abandoned wmi query is still running")
+	// nothing here can log; the text says when WMI stays blocked for long
+	errWMIStuck = fmt.Errorf("%w, for over 30 min", errWMIBusy)
 )
 
 // wmiAbandoned counts queries that overran their timeout and still run. The
 // WMI library serialises all queries behind one lock, so anything started
-// while one of them hangs would only queue up behind it.
-var wmiAbandoned atomic.Int32
+// while one of them hangs would only queue up behind it. wmiBusySince is
+// when the count left 0, in unix nanoseconds.
+var (
+	wmiAbandoned atomic.Int32
+	wmiBusySince atomic.Int64
+)
 
 // wmiBounded runs q with a deadline. A panic inside q (the library type
 // asserts on array elements) comes back as an error instead of killing the
@@ -33,6 +39,9 @@ var wmiAbandoned atomic.Int32
 func wmiBounded[T any](d time.Duration, q func() (T, error)) (T, error) {
 	var zero T
 	if wmiAbandoned.Load() > 0 {
+		if time.Since(time.Unix(0, wmiBusySince.Load())) > 30*time.Minute {
+			return zero, errWMIStuck
+		}
 		return zero, errWMIBusy
 	}
 	type result struct {
@@ -56,6 +65,10 @@ func wmiBounded[T any](d time.Duration, q func() (T, error)) (T, error) {
 	case r := <-ch:
 		return r.v, r.err
 	case <-t.C:
+		// stored first: whoever sees the count above 0 sees this start
+		if wmiAbandoned.Load() == 0 {
+			wmiBusySince.Store(time.Now().UnixNano())
+		}
 		wmiAbandoned.Add(1)
 		go func() {
 			<-ch

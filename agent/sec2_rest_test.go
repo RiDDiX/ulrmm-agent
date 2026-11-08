@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -51,6 +52,8 @@ type fakeIdentityServer struct {
 	staleNow int64
 	// the caps of the last registration
 	caps []string
+	// the next rotation is taken, its answer lost on the way
+	loseRotation bool
 }
 
 func (f *fakeIdentityServer) answer(w http.ResponseWriter, code int, v interface{}) {
@@ -107,7 +110,8 @@ func (f *fakeIdentityServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			f.answer(w, 400, map[string]string{"detail": "signature"})
 			return
 		}
-		if idreg := b64("idreg"); len(idreg) > 0 {
+		// keys it already has are taken again, as the server does
+		if idreg := b64("idreg"); len(idreg) > 0 && !f.ed.Equal(ed25519.PublicKey(ed)) {
 			rot := append([]byte("ulrmm-idrot-v1"), msg[len("ulrmm-idreg-v1"):]...)
 			if !ed25519.Verify(f.ed, rot, idreg) {
 				f.answer(w, 409, map[string]string{"detail": "identity already registered"})
@@ -115,6 +119,10 @@ func (f *fakeIdentityServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		f.ed = ed
+		if f.loseRotation && len(b64("idreg")) > 0 {
+			f.loseRotation = false
+			panic(http.ErrAbortHandler)
+		}
 		ans := map[string]interface{}{"kid": keyID(ed), "state": "active", "sec2": "optional", "rotate": []string{}, "now_ms": f.now()}
 		for k, v := range f.regBody {
 			ans[k] = v
@@ -188,7 +196,9 @@ func (f *fakeIdentityServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func identityAgent(t *testing.T, f *fakeIdentityServer) *Agent {
 	t.Helper()
 	old := etcConfig
-	t.Cleanup(func() { etcConfig = old })
+	// credential or certificate goroutines started by the test may still be
+	// writing under confTrust
+	t.Cleanup(func() { confTrust.Lock(); etcConfig = old; confTrust.Unlock() })
 	etcConfig = filepath.Join(t.TempDir(), "agent.json")
 	createAgentConfig("https://api", "agent1", "api", "legacy", "1", "", "", "", "", "")
 	f.t, f.agentID = t, "agent1"
@@ -460,6 +470,11 @@ func TestUnknownTokenRecovers(t *testing.T) {
 			t.Fatal("recovered tokens not stored")
 		}
 	}
+	// the recovery goroutine still writes under credMu; the cleanup resets etcConfig
+	for !a.sec2.credMu.TryLock() {
+		time.Sleep(time.Millisecond)
+	}
+	a.sec2.credMu.Unlock()
 }
 
 // An expired refresh token goes to recover at once, without a grant; so
@@ -514,6 +529,11 @@ func TestReleaseWindowGrant(t *testing.T) {
 					t.Fatal(via, "no renewal", f.calls[n:])
 				}
 			}
+			// the renewal stores the pair after it swaps the certificate
+			for !a.certMu.TryLock() {
+				time.Sleep(time.Millisecond)
+			}
+			a.certMu.Unlock()
 		}
 		f.mu.Lock()
 		got := strings.Join(f.calls[n:], " ")
@@ -541,8 +561,8 @@ func TestGrantConflictNotRetried(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now()
-	a.sec2.pinsAt = now.Add(time.Hour)
-	a.sec2.recoverAt = now.Add(time.Hour)
+	a.sec2.pinsAt.Store(now.Add(time.Hour).UnixMilli())
+	a.sec2.recoverAt.Store(now.Add(time.Hour).UnixMilli())
 	a.sec2Heartbeat(now)
 	a.sec2Heartbeat(now.Add(heartbeatEvery))
 	grants := 0
@@ -657,4 +677,94 @@ func TestSecurityEventsAfterNewTokens(t *testing.T) {
 	if !a.sec2.refusedNow("unknown-token", time.Now()) {
 		t.Error("the refresh on an unknown token was used up")
 	}
+}
+
+// A rotation whose answer got lost: the server has the new keys and the
+// new nkey and no longer asks for them. The heartbeat finishes it with the
+// pending seed and restarts for the new login; so does the next start.
+func TestSetupFinishesLostRotation(t *testing.T) {
+	oldBy, oldExit, oldDir := restartByExit, exitProcess, nixAgentDir
+	t.Cleanup(func() { restartByExit, exitProcess, nixAgentDir = oldBy, oldExit, oldDir })
+	nixAgentDir = t.TempDir()
+	f := &fakeIdentityServer{}
+	a := identityAgent(t, f)
+	a.ProgramDir = nixAgentDir
+	a.setupIdentity()
+	restarts := 0
+	restartByExit, exitProcess = true, func(int) { restarts++ }
+	for _, via := range []string{"heartbeat", "start"} {
+		old := a.sec2.ident.Load()
+		f.loseRotation = true
+		a.setRotate([]string{"identity"})
+		a.doRotations()
+		if a.sec2.ident.Load() != old || f.ed.Equal(ed25519.PublicKey(old.edPub())) || restarts != 0 {
+			t.Fatal(via, "the answer was not lost", f.calls)
+		}
+		if via == "start" {
+			a = apiAgent(t, f.ServeHTTP)
+			a.Logger.SetOutput(io.Discard)
+			a.ProgramDir = nixAgentDir
+			a.setupIdentity()
+		} else {
+			a.doRotations()
+		}
+		cur := a.sec2.ident.Load()
+		if next, _ := confValue(confIdentityNext); cur.kid == old.kid || next != "" || !a.registered() || !f.ed.Equal(ed25519.PublicKey(cur.edPub())) {
+			t.Fatal(via, "rotation not finished", f.calls)
+		}
+		if via == "heartbeat" && restarts != 1 {
+			t.Error("no restart for the new login")
+		}
+		restarts = 0
+	}
+}
+
+// A token pair whose config write fails stays in use: the next refresh
+// sends its refresh token, not the used one, and the heartbeat writes the
+// pair once the config takes it.
+func TestSetupKeepsTokensWhenStoreFails(t *testing.T) {
+	f := &fakeIdentityServer{}
+	a := identityAgent(t, f)
+	a.setupIdentity()
+	old := confWrite
+	t.Cleanup(func() { confWrite = old })
+	confWrite = func(map[string]string) error { return errors.New("disk full") }
+	for i := 2; i <= 3; i++ {
+		if ok, refused := a.refreshPair(); ok || refused != "" {
+			t.Fatal(i, ok, refused, f.calls)
+		}
+		if tok := a.sec2.access.Load(); tok == nil || *tok != fmt.Sprintf("access-%d", i) || !a.haveRefresh() {
+			t.Fatal(i, "the new pair is not in use")
+		}
+	}
+	if secretText(confRefresh) != "refresh-1" {
+		t.Fatal("the failed write stored something")
+	}
+	confWrite = old
+	a.sec2Heartbeat(time.Now())
+	if secretText(confRefresh) != "refresh-3" || secretText("Token") != "access-3" || a.sec2.pending.Load() != nil {
+		t.Errorf("not written: %q %q", secretText(confRefresh), secretText("Token"))
+	}
+	if exp := confMs(confRefreshExpires); exp < time.Now().Add(59*24*time.Hour).UnixMilli() {
+		t.Error("refresh expiry", exp)
+	}
+}
+
+// The heartbeat and refreshes started from REST answers run at once.
+func TestSetupSchedulingConcurrent(t *testing.T) {
+	f := &fakeIdentityServer{}
+	a := identityAgent(t, f)
+	a.setupIdentity()
+	now := time.Now().Add(time.Hour)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			a.sec2Heartbeat(now)
+			a.recoverAgent(now)
+			a.registrationDue(now)
+		}()
+	}
+	wg.Wait()
 }

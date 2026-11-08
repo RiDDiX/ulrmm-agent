@@ -70,7 +70,6 @@ func collectContainers(ctx context.Context, stats bool) *SContainers {
 		}
 		ct.source("lxc", err)
 	}
-	ct.Items = capList(ct.Items, ctrMax)
 	return ct
 }
 

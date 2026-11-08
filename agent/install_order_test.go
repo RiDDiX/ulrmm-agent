@@ -53,4 +53,14 @@ func TestInstallRemovesOldInstallAfterTokenCheck(t *testing.T) {
 	if !install() || !removedFirst.Load() {
 		t.Fatal("the old install was not removed before newagent")
 	}
+
+	// Windows: "already installed" comes before a token error
+	first := removeFirst
+	t.Cleanup(func() { removeFirst = first })
+	removeFirst = true
+	removed.Store(false)
+	status.Store(http.StatusUnauthorized)
+	if !install() || !removed.Load() {
+		t.Fatal("the existing install was not checked before the token")
+	}
 }

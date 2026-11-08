@@ -116,14 +116,39 @@ func TestDiskCheckHung(t *testing.T) {
 		t.Fatal("check blocked", time.Since(began))
 	}
 	began = time.Now()
-	if _, err := statBounded("/mnt/nfs", 5*time.Second); !errors.Is(err, errStatTimeout) || time.Since(began) > time.Second {
+	if _, err := statBounded("/mnt/nfs", 20*time.Millisecond); !errors.Is(err, errStatTimeout) || time.Since(began) > time.Second {
 		t.Fatal("second call while the first hangs:", err, time.Since(began))
 	}
 	statInFlight.Lock()
-	inFlight := statInFlight.m["/mnt/nfs"]
+	inFlight := statInFlight.m["/mnt/nfs"] != nil
 	statInFlight.Unlock()
 	if calls.Load() != 1 || !inFlight {
 		t.Fatalf("calls %d in flight %v", calls.Load(), inFlight)
+	}
+}
+
+// the state push and a disk check on one path share the slow call
+func TestStatBoundedShared(t *testing.T) {
+	release := make(chan struct{})
+	var calls atomic.Int32
+	old := diskUsage
+	diskUsage = func(string) (*disk.UsageStat, error) { calls.Add(1); <-release; return &disk.UsageStat{Total: 7}, nil }
+	defer func() { diskUsage = old }()
+
+	first := make(chan error, 1)
+	go func() { _, err := statBounded("/shared", time.Second); first <- err }()
+	for calls.Load() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	time.AfterFunc(50*time.Millisecond, func() { close(release) })
+	if u, err := statBounded("/shared", time.Second); err != nil || u.Total != 7 {
+		t.Fatal("second caller:", u, err)
+	}
+	if err := <-first; err != nil {
+		t.Fatal("first caller:", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatal("calls", calls.Load())
 	}
 }
 

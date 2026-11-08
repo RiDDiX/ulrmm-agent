@@ -154,7 +154,6 @@ func dockerItems(ctx context.Context, hc *http.Client, base, kind string, stats 
 	if err := apiGet(ctx, hc, base+"/containers/json?all=1", &list); err != nil {
 		return nil, err
 	}
-	list = capList(list, ctrMax)
 	ret := make([]SContainer, len(list))
 	sem := make(chan struct{}, ctrParallel)
 	var wg sync.WaitGroup
@@ -166,6 +165,10 @@ func dockerItems(ctx context.Context, hc *http.Client, base, kind string, stats 
 			c.Name = strings.TrimPrefix(d.Names[0], "/")
 		}
 		ret[i] = c
+		// checks get the whole list, the push only the first ctrMax
+		if i >= ctrMax {
+			continue
+		}
 		withStats := stats && c.State == "running" && nstats < ctrStatsMax
 		if withStats {
 			nstats++

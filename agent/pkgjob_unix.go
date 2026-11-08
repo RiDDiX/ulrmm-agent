@@ -11,8 +11,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-
-	"github.com/shirou/gopsutil/v3/disk"
 )
 
 // the shell a package script runs with
@@ -20,7 +18,7 @@ const pkgShell = "shell"
 
 // free bytes on the volume of dir; tests replace it
 var pkgFree = func(dir string) (uint64, error) {
-	u, err := disk.Usage(dir)
+	u, err := statBounded(dir, statfsWait)
 	if err != nil {
 		return 0, err
 	}

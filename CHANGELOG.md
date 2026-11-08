@@ -1,5 +1,36 @@
 # Agent changelog
 
+## 1.08.11.2026 (2026-11-08)
+
+- macOS and FreeBSD: a reinstall removes the old agent only after the server accepted the installer token, so an expired token or no network keeps the old install; Windows still says "already installed" first
+- command output without line breaks is kept in pieces and capped like other output; health and app tool output stays within its 4 MiB cap and reports "output too large" when cut
+- Windows keep awake works on non-English Windows and on machines without a lid (powercfg /qh, values read without the localized labels); a failed lid change is rolled back
+- a network mount that no longer answers stops only its own disk check ("does not respond") and is never asked twice at once; the other checks, the disk list and the state push go on
+- Windows Update: a scan or install that hangs is given up after 30 min or 2 h, its open updates are reported as failed, and the next call says "windows update is busy" instead of waiting forever
+- Windows: winget runs from the user's App Installer alias only when it is a real alias of the App Installer package, held open while it runs; anything else in that folder is ignored
+- Windows: cmd commands keep the quotes of a quoted program with quoted arguments (cmd /S /C)
+- Windows: PowerShell scripts are written with a UTF-8 BOM, so umlauts and other non-ASCII text come out right in Windows PowerShell 5.1
+- Windows: run-as-user script files are created readable only by that user, SYSTEM and Administrators
+- Linux, macOS, FreeBSD: run as user never runs as root
+- the identity key is replaced only when it is unreadable for good; a keystore that fails once keeps it, and a rotation whose answer was lost is finished on the next start or heartbeat
+- a new token pair that cannot be written is used anyway and written on the next heartbeat, so the server never sees the old refresh token again
+- pin documents fetched outside the service are kept in memory only, so the service no longer reports its own pins as tampered
+- Windows: state push and health use the WMI time limit, so a hung WMI service no longer piles up waiting calls; a WMI call that stays stuck shows up in the errors
+- self-healing writes the heartbeat on wake and restarts a hung agent only after two stale checks; on Linux a systemctl without --value (systemd before 230) no longer counts as "service missing"
+- Windows: the self-healing task runs on battery too, its reinstall runs detached with the protected work folder, and old self-heal installers are removed
+- binary, config, key store, unit and state files are synced to disk before they replace the old ones
+- package and SDIO downloads keep retrying while each try brings data; archives unpack only as far as the disk has room; a failed extract no longer leaves a progress loop behind
+- Windows: a failed driver query no longer replaces the server's driver list with an empty one, and a refresh asked for during a running push is not lost
+- Windows: a scheduled task is replaced in one call, so a definition the scheduler rejects keeps the old task; task start times in the daylight saving gap are accepted
+- Windows: a service the check starts passes only once it runs
+- Windows: Python is replaced only after the new one is unpacked
+- Windows: the installer token file must be readable only by Administrators, SYSTEM and its owner, checked on the open file
+- Windows: Remote Desktop is enabled through the firewall group id, which works on every language
+- Linux: Docker bridges no longer push the real network cards out of the interface list; addresses like 10.127.0.5 are no longer taken for loopback
+- container checks see every container, not only the first 128
+- parsed tool output uses the C locale for messages and numbers
+- gonutz/w32 is no longer a dependency
+
 ## 1.07.11.2026 (2026-11-07)
 
 - macOS: reinstalling over an existing agent frees the keep awake hold first, so disablesleep does not stay on after the old agent directory is removed

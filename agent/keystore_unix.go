@@ -191,5 +191,9 @@ func writeRootFile(path string, b []byte) error {
 	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	syncDir(filepath.Dir(path))
+	return nil
 }

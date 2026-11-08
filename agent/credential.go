@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -71,12 +72,35 @@ func expiry(raw json.RawMessage) int64 {
 	return int64(n)
 }
 
-func (a *Agent) haveRefresh() bool {
-	r, err := unprotect(confRefresh)
-	return err == nil && len(r) > 0
+// refreshSecret is the refresh token in use: a pair not written yet comes
+// before the stored one.
+func (a *Agent) refreshSecret() ([]byte, error) {
+	if p := a.sec2.pending.Load(); p != nil {
+		return []byte((*p)[confRefresh]), nil
+	}
+	return unprotect(confRefresh)
 }
 
-// storeTokens writes the pair in one config write before it is used.
+// haveRefresh: a refresh token is stored or pending. One the keystore
+// cannot open now counts too: its refresh fails and is tried again, a
+// grant is only for none or an unreadable one.
+func (a *Agent) haveRefresh() bool {
+	r, err := a.refreshSecret()
+	return len(r) > 0 || (err != nil && !errors.Is(err, errUnwrap))
+}
+
+// tokenMs is a time of the pair in use.
+func (a *Agent) tokenMs(name string) int64 {
+	if p := a.sec2.pending.Load(); p != nil {
+		n, _ := strconv.ParseInt((*p)[name], 10, 64)
+		return n
+	}
+	return confMs(name)
+}
+
+// storeTokens writes the pair in one config write before it is used. The
+// server has used the old refresh token up: when the write fails the pair
+// is used anyway, and the heartbeat writes it again.
 func (a *Agent) storeTokens(t *tokenAnswer, extra map[string]string) error {
 	if t.Access == "" || t.Refresh == "" {
 		return errors.New("the answer has no token pair")
@@ -95,12 +119,7 @@ func (a *Agent) storeTokens(t *tokenAnswer, extra map[string]string) error {
 	for k, v := range extra {
 		kv[k] = v
 	}
-	if err := sealValues(kv); err != nil {
-		return err
-	}
-	if err := setConfValues(kv); err != nil {
-		return err
-	}
+	err := a.writeTokens(kv)
 	// no learnClock: a refresh retried within the server's grace gets the
 	// cached pair with the time of its first issue
 	a.sec2.access.Store(&t.Access)
@@ -108,7 +127,36 @@ func (a *Agent) storeTokens(t *tokenAnswer, extra map[string]string) error {
 	if a.pendingSecurityEvents() {
 		go a.sendSecurityEvents()
 	}
+	return err
+}
+
+// writeTokens stores the plain values kv of a pair, or keeps them pending.
+func (a *Agent) writeTokens(kv map[string]string) error {
+	sealed := maps.Clone(kv)
+	err := sealValues(sealed)
+	if err == nil {
+		err = setConfValues(sealed)
+	}
+	if err != nil {
+		a.sec2.pending.Store(&kv)
+		return err
+	}
+	a.sec2.pending.Store(nil)
 	return nil
+}
+
+// storePending writes a pair whose config write failed once more.
+func (a *Agent) storePending() {
+	if a.sec2.pending.Load() == nil {
+		return
+	}
+	a.sec2.credMu.Lock()
+	defer a.sec2.credMu.Unlock()
+	if p := a.sec2.pending.Load(); p != nil {
+		if err := a.writeTokens(*p); err != nil {
+			a.Logger.Errorln("token store:", err)
+		}
+	}
 }
 
 // confWriteOrder is the order in which a config without an atomic write
@@ -245,7 +293,7 @@ func (a *Agent) refreshPair() (ok bool, refused string) {
 	}
 	defer a.sec2.credMu.Unlock()
 	id := a.sec2.ident.Load()
-	ref, err := unprotect(confRefresh)
+	ref, err := a.refreshSecret()
 	if id == nil || err != nil || len(ref) == 0 {
 		return false, ""
 	}
@@ -314,14 +362,14 @@ func refreshDue(issuedMs, expiresMs, nowMs int64) bool {
 // recoverDue: the client certificate expired, or the refresh token is gone
 // or expired, and the last try is 30 minutes ago.
 func (a *Agent) recoverDue(now time.Time) bool {
-	if !a.registered() || now.Before(a.sec2.recoverAt) {
+	if !a.registered() || now.UnixMilli() < a.sec2.recoverAt.Load() {
 		return false
 	}
 	certGone := false
 	if c := a.clientCert.Load(); c != nil && c.Leaf != nil && now.After(c.Leaf.NotAfter) {
 		certGone = true
 	}
-	ref := confMs(confRefreshExpires)
+	ref := a.tokenMs(confRefreshExpires)
 	tokensGone := a.sec2.refreshBad.Load() || (ref > 0 && now.UnixMilli() > ref)
 	return certGone || tokensGone
 }
@@ -329,7 +377,7 @@ func (a *Agent) recoverDue(now time.Time) bool {
 // recoverAgent brings an agent back that was offline past its certificate
 // or tokens: the identity signature alone, within the server's grace.
 func (a *Agent) recoverAgent(now time.Time) bool {
-	a.sec2.recoverAt = now.Add(recoverEvery)
+	a.sec2.recoverAt.Store(now.Add(recoverEvery).UnixMilli())
 	a.sec2.credMu.Lock()
 	defer a.sec2.credMu.Unlock()
 	id := a.sec2.ident.Load()
@@ -388,8 +436,8 @@ func (a *Agent) sec2Heartbeat(now time.Time) {
 	}
 	// before the registration: a server without the endpoint is asked again
 	// once its pin document lists command keys
-	if now.After(a.sec2.pinsAt) {
-		a.sec2.pinsAt = now.Add(pinsEvery)
+	if now.UnixMilli() > a.sec2.pinsAt.Load() {
+		a.sec2.pinsAt.Store(now.Add(pinsEvery).UnixMilli())
 		a.RefreshPins()
 	}
 	if a.registrationDue(now) {
@@ -401,12 +449,13 @@ func (a *Agent) sec2Heartbeat(now time.Time) {
 	if !a.registered() {
 		return
 	}
+	a.storePending()
 	if !a.haveRefresh() {
 		a.grantToken()
 	}
 	if a.recoverDue(now) {
 		a.recoverAgent(now)
-	} else if refreshDue(confMs(confAccessIssued), confMs(confAccessExpires), a.serverNowMs()) {
+	} else if refreshDue(a.tokenMs(confAccessIssued), a.tokenMs(confAccessExpires), a.serverNowMs()) {
 		a.refreshToken()
 	}
 	a.doRotations()
@@ -415,19 +464,17 @@ func (a *Agent) sec2Heartbeat(now time.Time) {
 // doRotations runs what the server asked for; the server drops an entry
 // once it saw it done.
 func (a *Agent) doRotations() {
-	p := a.sec2.rotate.Swap(nil)
-	if p == nil {
-		return
-	}
-	identity := false
-	for _, what := range *p {
-		switch what {
-		case "cert":
-			a.sec2.forceCert.Store(true)
-		case "token":
-			a.refreshToken()
-		case "identity":
-			identity = true
+	identity := a.sec2.rotRetry.Load()
+	if p := a.sec2.rotate.Swap(nil); p != nil {
+		for _, what := range *p {
+			switch what {
+			case "cert":
+				a.sec2.forceCert.Store(true)
+			case "token":
+				a.refreshToken()
+			case "identity":
+				identity = true
+			}
 		}
 	}
 	// the restart ends this process before the service's renewal runs

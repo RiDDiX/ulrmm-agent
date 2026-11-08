@@ -33,9 +33,23 @@ func healUnitBase() string                 { return strings.TrimSuffix(IdentNixS
 func (linuxHeal) unitPath(n string) string { return "/etc/systemd/system/" + n }
 
 func (l linuxHeal) serviceState() (bool, bool) {
-	load, _ := healCmd(30*time.Second, "systemctl", "show", "-p", "LoadState", "--value", IdentNixSvc)
-	active, _ := healCmd(30*time.Second, "systemctl", "is-active", IdentNixSvc)
-	return strings.TrimSpace(load) == "loaded", strings.TrimSpace(active) == "active"
+	// no --value: systemd before 230 (CentOS 7) does not know it
+	out, err := healCmd(30*time.Second, "systemctl", "show", "-p", "LoadState", "-p", "ActiveState", IdentNixSvc)
+	return healUnitState(out, err)
+}
+
+// healUnitState reads systemctl show; an answer it cannot read leaves the
+// service alone.
+func healUnitState(out string, err error) (installed, running bool) {
+	u := parseUnitShow(out)
+	if err != nil || u.load == "" {
+		return true, true
+	}
+	switch u.active {
+	case "active", "activating", "reloading":
+		running = true
+	}
+	return u.load == "loaded", running
 }
 
 // same unit the server's install script writes

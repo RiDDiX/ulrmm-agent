@@ -9,11 +9,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	mrand "math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
+	"unsafe"
 
 	rmm "git.riddix.de/RiDDiX/ulrmm-agent/shared"
 	"github.com/fourcorelabs/wintoken"
@@ -173,6 +176,10 @@ func (a *Agent) RunScript(code, shell string, args []string, timeout int, runAsU
 	setupFail := func(err error) (string, string, int, error) { return "", err.Error(), scriptSetupExit, err }
 	timeout = positiveTimeout(timeout)
 
+	// an unsupported shell is a start failure, also when no user is signed in
+	if _, _, _, err := winScriptArgv(shell, "", winScriptBins{}, nil, nil, false, ""); err != nil {
+		return "", err.Error(), scriptStartExit, err
+	}
 	if err := createWinTempDir(); err != nil {
 		return setupFail(err)
 	}
@@ -184,23 +191,21 @@ func (a *Agent) RunScript(code, shell string, args []string, timeout int, runAsU
 		}
 		defer tok.Close()
 	}
-	f, err := os.CreateTemp(a.WinTmpDir, "ulrmm*"+scriptExt(shell))
+	var f *os.File
+	var err error
+	if tok != nil {
+		f, err = userScriptFile(a.WinRunAsUserTmpDir, scriptExt(shell), tok.Token())
+	} else {
+		f, err = os.CreateTemp(a.WinTmpDir, "ulrmm*"+scriptExt(shell))
+	}
 	if err != nil {
 		return setupFail(err)
 	}
 	script := f.Name()
-	defer func() { os.Remove(script) }()
+	defer os.Remove(script)
 	_, err = f.WriteString(scriptText(shell, code))
 	if cerr := f.Close(); err == nil {
 		err = cerr
-	}
-	if err == nil && tok != nil {
-		// written in the admins-only directory and moved with its own DACL,
-		// so other users of the run-as-user directory never get to read it
-		var dst string
-		if dst, err = userScript(script, a.WinRunAsUserTmpDir, tok.Token()); err == nil {
-			script = dst
-		}
 	}
 	if err != nil {
 		return setupFail(err)
@@ -248,17 +253,32 @@ func (a *Agent) RunScript(code, shell string, args []string, timeout int, runAsU
 	return scriptReply(CleanString(out.String()), CleanString(errOut.String()), exitcode, timedOut, err, timeout)
 }
 
-// userScript gives the script at path SYSTEM and Administrators full access
-// and the token's user read and execute, nothing inherited, then moves it
-// into dir. A move on the same volume keeps that DACL.
-func userScript(path, dir string, tok windows.Token) (string, error) {
+// userScriptFile creates a new script file in dir that SYSTEM and
+// Administrators have full access to and the token's user read and execute,
+// nothing inherited. The DACL is set at creation, so other users of dir
+// never get to open the file.
+func userScriptFile(dir, ext string, tok windows.Token) (*os.File, error) {
 	u, err := tok.GetTokenUser()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	if err := setPathSecurity(path, "O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1200a9;;;"+u.User.Sid.String()+")"); err != nil {
-		return "", err
+	sd, err := windows.SecurityDescriptorFromString("O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1200a9;;;" + u.User.Sid.String() + ")")
+	if err != nil {
+		return nil, err
 	}
-	dst := filepath.Join(dir, filepath.Base(path))
-	return dst, os.Rename(path, dst)
+	sa := &windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: sd}
+	for try := 0; ; try++ {
+		name := filepath.Join(dir, "ulrmm"+strconv.FormatUint(uint64(mrand.Uint32()), 10)+ext)
+		p, err := windows.UTF16PtrFromString(name)
+		if err != nil {
+			return nil, err
+		}
+		h, err := windows.CreateFile(p, windows.GENERIC_WRITE, 0, sa, windows.CREATE_NEW, windows.FILE_ATTRIBUTE_NORMAL, 0)
+		if err == nil {
+			return os.NewFile(uintptr(h), name), nil
+		}
+		if err != windows.ERROR_FILE_EXISTS || try == 100 {
+			return nil, &os.PathError{Op: "createfile", Path: name, Err: err}
+		}
+	}
 }

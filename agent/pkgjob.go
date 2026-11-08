@@ -179,6 +179,15 @@ func pkgSpace(free uint64, p *pkgPlan) error {
 	return nil
 }
 
+// pkgExtractLimit is what an unpack may write: the space the download left
+// free, less the reserve pkgSpace keeps.
+func pkgExtractLimit(free uint64, size int64) int64 {
+	if room := int64(free) - size - 512<<20; room < pkgExtractMax {
+		return room
+	}
+	return pkgExtractMax
+}
+
 // pkgFatal: another download try would not help.
 type pkgFatal struct{ error }
 
@@ -419,8 +428,9 @@ func (x *pkgUnpack) add(name string, mode fs.FileMode, size int64, open func() (
 	return nil
 }
 
-// pkgExtract unpacks a zip, 7z or tar.gz archive into the new folder dest.
-func pkgExtract(kind, archive, dest string, limit int64) error {
+// pkgExtract unpacks a zip, 7z or tar.gz archive into the new folder dest;
+// tests replace it.
+var pkgExtract = func(kind, archive, dest string, limit int64) error {
 	if err := os.Mkdir(dest, 0o700); err != nil {
 		return err
 	}
@@ -739,10 +749,12 @@ func (a *Agent) pkgJob(job string) (pkgResult, string) {
 	}
 	dir := work
 	if plan.Extract != "none" {
-		stop := a.pkgBeat(job, "extracting", plan.Size)
 		dir = filepath.Join(work, "files")
-		err := pkgExtract(plan.Extract, file, dir, pkgExtractMax)
-		stop()
+		err := func() error {
+			stop := a.pkgBeat(job, "extracting", plan.Size)
+			defer stop()
+			return pkgExtract(plan.Extract, file, dir, pkgExtractLimit(free, plan.Size))
+		}()
 		if err != nil {
 			return fail(err), work
 		}

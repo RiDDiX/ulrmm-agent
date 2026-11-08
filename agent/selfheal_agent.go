@@ -99,9 +99,5 @@ func writeIfChanged(path, content string, mode os.FileMode) (bool, error) {
 	if b, err := os.ReadFile(path); err == nil && string(b) == content {
 		return false, nil
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(content), mode); err != nil {
-		return false, err
-	}
-	return true, os.Rename(tmp, path)
+	return true, writeFileSynced(path, []byte(content), mode)
 }

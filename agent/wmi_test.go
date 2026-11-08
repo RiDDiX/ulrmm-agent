@@ -69,6 +69,26 @@ func TestWMIRows(t *testing.T) {
 	}
 }
 
+func TestWMIStuck(t *testing.T) {
+	release := make(chan struct{})
+	if _, err := wmiBounded(20*time.Millisecond, func() (int, error) { <-release; return 1, nil }); err != errWMITimeout {
+		t.Fatalf("timeout case: %v", err)
+	}
+	defer func() {
+		close(release)
+		for deadline := time.Now().Add(2 * time.Second); wmiAbandoned.Load() != 0 && time.Now().Before(deadline); {
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	if _, err := wmiBounded(time.Second, func() (int, error) { return 1, nil }); err != errWMIBusy {
+		t.Fatalf("fresh hang: %v", err)
+	}
+	wmiBusySince.Store(time.Now().Add(-31 * time.Minute).UnixNano())
+	if _, err := wmiBounded(time.Second, func() (int, error) { return 1, nil }); err != errWMIStuck || !errors.Is(err, errWMIBusy) {
+		t.Fatalf("hang over 30 min: %v", err)
+	}
+}
+
 func TestWMIBounded(t *testing.T) {
 	v, err := wmiBounded(time.Second, func() (int, error) { return 7, nil })
 	if v != 7 || err != nil {

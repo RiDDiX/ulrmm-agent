@@ -401,6 +401,9 @@ func TestClockOffsetOnlyFromREST(t *testing.T) {
 func TestArmedRefusesPlaintext(t *testing.T) {
 	v := loadVectors(t)
 	a, _ := sec2Agent(t, v)
+	// the pin refresh a refusal starts would outlive the test and race with
+	// the build key of the next one; TestUnsignedRefusalRefreshesPins covers it
+	a.sec2.refusedNow("pins", time.Now())
 	plain, _ := encodeMsgpack(map[string]string{"func": "ping"})
 	if _, _, ok := a.openRequest(&nats.Msg{Data: plain}); ok {
 		t.Fatal("an armed agent ran a plaintext command")
@@ -955,7 +958,7 @@ func TestHeartbeatRefreshesPinsUnregistered(t *testing.T) {
 	a.BaseURL, a.Cert = srv.URL, ca.file(t)
 	id, _ := deriveIdentity(bytes.Repeat([]byte{1}, 32))
 	a.sec2.ident.Store(id)
-	a.sec2.noEndpoint = true
+	a.sec2.noEndpoint.Store(true)
 	a.pins.Store(&pinSet{Seq: 1, Primary: []string{spkiPin(ca.cert.Raw)}})
 	a.sec2Heartbeat(now)
 	if srv.asked.Load() != 1 {

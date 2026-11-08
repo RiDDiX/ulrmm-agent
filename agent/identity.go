@@ -222,14 +222,14 @@ func (a *Agent) registerIdentity() (ok, netErr bool) {
 	if id == nil || a.rClient == nil {
 		return false, false
 	}
-	a.sec2.regRetry = time.Now().Add(identityRetry)
+	a.sec2.regRetry.Store(time.Now().Add(identityRetry).UnixMilli())
 	code, ans, err := a.postIdentity(id, nil)
 	if err != nil {
 		a.Logger.Debugln("identity registration:", err)
-		a.sec2.regRetry = time.Now().Add(heartbeatEvery)
+		a.sec2.regRetry.Store(time.Now().Add(heartbeatEvery).UnixMilli())
 		return false, true
 	}
-	a.sec2.noEndpoint = code == 404
+	a.sec2.noEndpoint.Store(code == 404)
 	switch {
 	case code == 200 || code == 201:
 		if err := setConfValues(map[string]string{confIdentityKid: id.kid, confKeyStoreSent: keyStoreCap()}); err != nil {
@@ -307,6 +307,8 @@ func (a *Agent) rotateIdentity() bool {
 		return false
 	}
 	code, ans, err := a.postIdentity(next, prev)
+	// the server may have the new keys and no longer ask for them
+	a.sec2.rotRetry.Store(err != nil || code >= 500)
 	if err != nil || (code != 200 && code != 201) {
 		a.Logger.Errorln("identity rotation: the server answered", code, err)
 		return false
@@ -318,6 +320,7 @@ func (a *Agent) rotateIdentity() bool {
 	}
 	if err != nil {
 		a.Logger.Errorln("identity rotation: store:", err)
+		a.sec2.rotRetry.Store(true)
 		return false
 	}
 	a.sec2.ident.Store(next)
@@ -336,6 +339,11 @@ func (a *Agent) setupIdentity() {
 		return
 	}
 	if a.registered() {
+		// a rotation whose answer got lost or was not stored: the server
+		// takes the same keys again
+		if m, err := unprotect(confIdentityNext); err == nil && len(m) == 32 {
+			a.rotateIdentity()
+		}
 		if !a.haveRefresh() {
 			a.grantToken()
 		} else if a.recoverDue(time.Now()) {
@@ -355,7 +363,7 @@ func (a *Agent) setupIdentity() {
 		a.reportKeyStore()
 		// the first sealed commands may need a newer pin document (command
 		// keys, the sec2 claim) than the stored one
-		a.sec2.pinsAt = time.Now().Add(pinsEvery)
+		a.sec2.pinsAt.Store(time.Now().Add(pinsEvery).UnixMilli())
 		a.RefreshPins()
 	}
 }
@@ -388,10 +396,10 @@ func (a *Agent) reportKeyStore() {
 // server without the endpoint is asked again once its pin document lists
 // command keys.
 func (a *Agent) registrationDue(now time.Time) bool {
-	if a.sec2.ident.Load() == nil || a.registered() || now.Before(a.sec2.regRetry) {
+	if a.sec2.ident.Load() == nil || a.registered() || now.UnixMilli() < a.sec2.regRetry.Load() {
 		return false
 	}
-	return !a.sec2.noEndpoint || len(a.pins.Load().cmdKeys()) > 0
+	return !a.sec2.noEndpoint.Load() || len(a.pins.Load().cmdKeys()) > 0
 }
 
 // natsAuth is the login of the NATS connection: the nkey once the server

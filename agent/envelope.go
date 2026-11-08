@@ -45,11 +45,18 @@ type sec2State struct {
 	sids      map[[16]byte]time.Time
 	refusedAt map[string]time.Time
 
-	credMu     sync.Mutex
-	regRetry   time.Time
-	noEndpoint bool
-	recoverAt  time.Time
-	pinsAt     time.Time
+	credMu sync.Mutex
+	// unix ms; the heartbeat and refreshes from REST answers run at once
+	regRetry   atomic.Int64
+	noEndpoint atomic.Bool
+	recoverAt  atomic.Int64
+	pinsAt     atomic.Int64
+	// a token pair in use whose config write failed, written again by the
+	// heartbeat
+	pending atomic.Pointer[map[string]string]
+	// a rotation whose answer got lost or was not stored, tried again by
+	// the heartbeat
+	rotRetry   atomic.Bool
 	forceCert  atomic.Bool
 	refreshBad atomic.Bool
 	// the server answered a grant with 409: a family exists

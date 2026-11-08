@@ -11,8 +11,10 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -196,12 +198,40 @@ func (b *capBuf) Write(p []byte) (int, error) {
 
 func (b *capBuf) String() string { return b.buf.String() }
 
+// untranslatedEnv keeps parsed messages and numbers in the C locale (ufw on
+// a German host says "aktiv", a decimal comma breaks numbers) but not the
+// character set, so ps still shows non-ASCII process names. LC_ALL would
+// override both, so its value moves to LC_CTYPE.
+func untranslatedEnv(env []string) []string {
+	out := make([]string, 0, len(env)+2)
+	ctype, all := false, ""
+	for _, kv := range env {
+		switch {
+		case strings.HasPrefix(kv, "LC_ALL="):
+			all = strings.TrimPrefix(kv, "LC_ALL=")
+			continue
+		case strings.HasPrefix(kv, "LC_MESSAGES="), strings.HasPrefix(kv, "LC_NUMERIC="):
+			continue
+		case strings.HasPrefix(kv, "LC_CTYPE="):
+			ctype = true
+		}
+		out = append(out, kv)
+	}
+	if all != "" && !ctype {
+		out = append(out, "LC_CTYPE="+all)
+	}
+	return append(out, "LC_MESSAGES=C", "LC_NUMERIC=C")
+}
+
 // fixed argv, no shell, 10 s per exec. stdout is returned even on a non-zero exit.
 func runOut(ctx context.Context, name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, healthExecMax)
 	defer cancel()
 	var out capBuf
 	cmd := exec.CommandContext(ctx, name, args...)
+	if runtime.GOOS != "windows" {
+		cmd.Env = untranslatedEnv(os.Environ())
+	}
 	cmd.Stdout = &out
 	err := cmd.Run()
 	if err == nil && out.over {

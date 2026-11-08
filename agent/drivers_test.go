@@ -174,6 +174,7 @@ func TestPushDriversBackoff(t *testing.T) {
 	driversRunning.Store(true)
 	a.pushDrivers(true, collect)
 	driversRunning.Store(false)
+	driversRerun.Store(false)
 	if hits.Load() != 2 {
 		t.Fatal("second push while one runs")
 	}

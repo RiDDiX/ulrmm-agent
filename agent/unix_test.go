@@ -183,7 +183,7 @@ func TestHardwareHelpers(t *testing.T) {
 	if s := formatOS("ubuntu", "22.04", "x86_64", "5.15.0-91-generic"); s != "Ubuntu 22.04 x86_64 5.15.0-91-generic" {
 		t.Fatalf("os %q", s)
 	}
-	if ips := filterLocalIPs([]string{"127.0.0.1/8", "::1/128", "192.168.1.5/24", "fe80::1/64"}); !reflect.DeepEqual(ips, []string{"192.168.1.5/24", "fe80::1/64"}) {
+	if ips := filterLocalIPs([]string{"127.0.0.1/8", "::1/128", "192.168.1.5/24", "fe80::1/64", "10.127.0.5/24", "127.0.0.2", "bogus"}); !reflect.DeepEqual(ips, []string{"192.168.1.5/24", "fe80::1/64", "10.127.0.5/24", "bogus"}) {
 		t.Fatalf("ips %v", ips)
 	}
 	if s := diskLine("unknown", "Samsung SSD", "SCSI", "SSD", "sda", 1<<30); s != "Samsung SSD SCSI SSD sda 1.0 GB" {

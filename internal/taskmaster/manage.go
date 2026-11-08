@@ -438,6 +438,7 @@ func (t *TaskService) CreateTaskEx(path string, newTaskDef Definition, username,
 
 	nameIndex := strings.LastIndex(path, `\`)
 	folderPath := path[:nameIndex]
+	flags := TASK_CREATE
 
 	if !t.taskFolderExist(folderPath) {
 		_, err = oleutil.CallMethod(t.rootFolderObj, "CreateFolder", folderPath, "")
@@ -454,14 +455,12 @@ func (t *TaskService) CreateTaskEx(path string, newTaskDef Definition, username,
 
 				return task, false, nil
 			}
-			_, err = oleutil.CallMethod(t.rootFolderObj, "DeleteTask", path, 0)
-			if err != nil {
-				return RegisteredTask{}, false, fmt.Errorf("error deleting registered task %s: %v", path, getTaskSchedulerError(err))
-			}
+			// replaced in one call, so a definition the scheduler rejects keeps the old task
+			flags = TASK_CREATE_OR_UPDATE
 		}
 	}
 
-	newTaskObj, err := t.modifyTask(path, newTaskDef, username, password, logonType, TASK_CREATE)
+	newTaskObj, err := t.modifyTask(path, newTaskDef, username, password, logonType, flags)
 	if err != nil {
 		return RegisteredTask{}, false, fmt.Errorf("error creating registered task %s: %v", path, err)
 	}

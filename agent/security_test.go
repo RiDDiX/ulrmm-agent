@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"debug/elf"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -126,6 +127,24 @@ func TestAgentUpdateBadDownloadReported(t *testing.T) {
 	body, err := os.ReadFile("/bin/echo")
 	if err != nil {
 		t.Skip(err)
+	}
+	// the update refuses a binary for another GOARCH, as in a 386 run on an amd64 host
+	echo, err := elf.Open("/bin/echo")
+	if err != nil {
+		t.Skip(err)
+	}
+	defer echo.Close()
+	self, err := os.Executable()
+	if err != nil {
+		t.Skip(err)
+	}
+	selfELF, err := elf.Open(self)
+	if err != nil {
+		t.Skip(err)
+	}
+	defer selfELF.Close()
+	if echo.Machine != selfELF.Machine {
+		t.Skip("/bin/echo is not a " + runtime.GOARCH + " binary")
 	}
 	sum := sha256.Sum256(body)
 	sha := hex.EncodeToString(sum[:])

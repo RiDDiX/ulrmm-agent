@@ -6,8 +6,10 @@ package agent
 import (
 	"context"
 	"strings"
+	"time"
 
 	rmm "git.riddix.de/RiDDiX/ulrmm-agent/shared"
+	"github.com/StackExchange/wmi"
 	gnet "github.com/shirou/gopsutil/v3/net"
 )
 
@@ -17,8 +19,15 @@ func osSystem(ctx context.Context, e *errs) *SSystem {
 	return &SSystem{Mounts: statMounts(psMounts(ctx, e))}
 }
 
+// well inside stateDeadline, so the fallback below still has time
+const netAdapterWait = 20 * time.Second
+
 func osIfaces(ctx context.Context, e *errs) []SIface {
-	ads, err := wmiNS[winAdapter]("SELECT Name, Speed, FullDuplex, MediaConnectState, PermanentAddress, NdisPhysicalMedium, MtuSize FROM MSFT_NetAdapter", nsStdCimv2)
+	ads, err := wmiBounded(netAdapterWait, func() ([]winAdapter, error) {
+		var dst []winAdapter
+		err := wmi.QueryNamespace("SELECT Name, Speed, FullDuplex, MediaConnectState, PermanentAddress, NdisPhysicalMedium, MtuSize FROM MSFT_NetAdapter", &dst, nsStdCimv2)
+		return dst, err
+	})
 	if err != nil {
 		e.add("MSFT_NetAdapter: %v", err)
 		return psIfaces(ctx, func(i gnet.InterfaceStat) bool {
@@ -43,7 +52,7 @@ func collectContainers(ctx context.Context, stats bool) *SContainers {
 	if err == nil {
 		var items []SContainer
 		items, err = parseGetVM([]byte(out))
-		ct.Items = append(ct.Items, capList(items, ctrMax)...)
+		ct.Items = append(ct.Items, items...)
 	}
 	ct.source("hyperv", err)
 	return ct

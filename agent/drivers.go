@@ -66,6 +66,9 @@ type driverReport struct {
 	Drivers  []driverRow  `json:"drivers"`
 	Problems []problemRow `json:"problems"`
 	Errors   []string     `json:"errors"`
+	// the driver query failed and gave nothing: sending would wipe the
+	// inventory the server has
+	noDrivers bool
 }
 
 const (
@@ -79,6 +82,8 @@ const (
 var (
 	driversRunning  atomic.Bool
 	driversOffUntil atomic.Int64
+	// a forced push that came while another ran; that one pushes again
+	driversRerun atomic.Bool
 )
 
 // driverDate turns CIM datetime text (20230615000000.******+000) into
@@ -196,6 +201,7 @@ func collectDrivers(now time.Time, drivers func() ([]Win32_PnPSignedDriver, erro
 	d, err := drivers()
 	if err != nil {
 		r.addErr("Win32_PnPSignedDriver: %v", err)
+		r.noDrivers = len(d) == 0
 	}
 	r.Drivers = cleanDrivers(d, &r)
 	p, err := problems()
@@ -248,14 +254,30 @@ func (a *Agent) SendDrivers(force bool) {
 }
 
 func (a *Agent) pushDrivers(force bool, collect func() driverReport) {
-	if !driversRunning.CompareAndSwap(false, true) {
-		return
+	if force {
+		driversRerun.Store(true)
 	}
-	defer driversRunning.Store(false)
+	// whoever holds driversRunning looks at driversRerun after its push, so
+	// a forced one that finds it taken is not lost
+	for driversRunning.CompareAndSwap(false, true) {
+		a.pushDriversOnce(driversRerun.Swap(false), collect)
+		driversRunning.Store(false)
+		if !driversRerun.Load() {
+			return
+		}
+	}
+}
+
+func (a *Agent) pushDriversOnce(force bool, collect func() driverReport) {
 	if !force && time.Now().Unix() < driversOffUntil.Load() {
 		return
 	}
-	b, err := encodeDrivers(collect())
+	rep := collect()
+	if rep.noDrivers {
+		a.Logger.Errorln("SendDrivers(): not sent:", strings.Join(rep.Errors, "; "))
+		return
+	}
+	b, err := encodeDrivers(rep)
 	if err != nil {
 		a.Logger.Debugln("SendDrivers():", err)
 		return

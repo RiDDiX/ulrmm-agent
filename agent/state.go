@@ -190,40 +190,42 @@ var (
 	diskUsage      = disk.Usage
 	diskCheckWait  = 5 * time.Second
 	errStatTimeout = errors.New("does not respond")
-	// paths whose statfs has not returned yet; a hung network mount keeps
-	// its one call and every later one fails at once
+	// paths whose statfs has not returned yet; later callers wait on that
+	// one call, so a hung network mount never gets a second one
 	statInFlight = struct {
 		sync.Mutex
-		m map[string]bool
-	}{m: map[string]bool{}}
+		m map[string]*statCall
+	}{m: map[string]*statCall{}}
 )
+
+// u and err are set before done closes
+type statCall struct {
+	done chan struct{}
+	u    *disk.UsageStat
+	err  error
+}
 
 // statBounded waits at most d for the usage of path.
 func statBounded(path string, d time.Duration) (*disk.UsageStat, error) {
 	statInFlight.Lock()
-	if statInFlight.m[path] {
-		statInFlight.Unlock()
-		return nil, errStatTimeout
+	c := statInFlight.m[path]
+	if c == nil {
+		c = &statCall{done: make(chan struct{})}
+		statInFlight.m[path] = c
+		go func() {
+			c.u, c.err = diskUsage(path)
+			statInFlight.Lock()
+			delete(statInFlight.m, path)
+			statInFlight.Unlock()
+			close(c.done)
+		}()
 	}
-	statInFlight.m[path] = true
 	statInFlight.Unlock()
-	type res struct {
-		u   *disk.UsageStat
-		err error
-	}
-	ch := make(chan res, 1)
-	go func() {
-		u, err := diskUsage(path)
-		statInFlight.Lock()
-		delete(statInFlight.m, path)
-		statInFlight.Unlock()
-		ch <- res{u, err}
-	}()
 	t := time.NewTimer(d)
 	defer t.Stop()
 	select {
-	case r := <-ch:
-		return r.u, r.err
+	case <-c.done:
+		return c.u, c.err
 	case <-t.C:
 		return nil, errStatTimeout
 	}
@@ -360,6 +362,7 @@ func collectState(stats bool) *State {
 	})
 	start("containers", func(ctx context.Context, e *errs) func(*State) {
 		c := collectContainers(ctx, stats)
+		c.Items = capList(c.Items, ctrMax)
 		for k, m := range c.msgs {
 			e.add("%s: %s", k, m)
 		}
