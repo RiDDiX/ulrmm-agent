@@ -178,6 +178,10 @@ func TestRestoresFromLocalCopyWhenServerUnreachable(t *testing.T) {
 	_ = f.h.setup(f.main)
 	writeFile(t, f.main, "corrupted")
 
+	if a := f.h.run(); len(a) != 0 || readFile(t, f.main) != "corrupted" {
+		t.Fatalf("a changed binary is repaired only on a second look: %v", a)
+	}
+	f.now = f.now.Add(15 * time.Minute)
 	actions := f.h.run()
 	if readFile(t, f.main) != "good build" {
 		t.Fatal("binary not restored")
@@ -190,6 +194,32 @@ func TestRestoresFromLocalCopyWhenServerUnreachable(t *testing.T) {
 	}
 }
 
+// An update replaces the binary before the new agent records it, and a
+// single device may get a build the server does not ship yet: the run in
+// between must not put the old binary back.
+func TestUpdateInFlightIsNotReverted(t *testing.T) {
+	f := newHealFixture(t)
+	_ = f.h.setup(f.main)
+	writeFile(t, f.main, "newer build")
+	if a := f.h.run(); len(a) != 0 || readFile(t, f.main) != "newer build" {
+		t.Fatalf("update reverted: %v", a)
+	}
+	// the new agent records itself before the next run
+	f.server, f.srvErr = healDownload{Version: "2.11.2", URL: "u", SHA256: sumOf(t, "newer build")}, nil
+	if err := f.h.setup(f.main); err != nil {
+		t.Fatal(err)
+	}
+	f.now = f.now.Add(15 * time.Minute)
+	if a := f.h.run(); len(a) != 0 || readFile(t, f.main) != "newer build" {
+		t.Fatalf("recorded update repaired: %v", a)
+	}
+	var st healState
+	_ = readJSON(f.h.statePath(), &st)
+	if !st.ModifiedSince.IsZero() {
+		t.Fatal("first sight kept after the binary matched again")
+	}
+}
+
 func TestReinstallsFromServerWhenCopyIsBad(t *testing.T) {
 	f := newHealFixture(t)
 	_ = f.h.setup(f.main)
@@ -198,6 +228,8 @@ func TestReinstallsFromServerWhenCopyIsBad(t *testing.T) {
 	f.payload = "fresh build"
 	f.server, f.srvErr = signedDownload(t, "2.11.2", "https://api/agentdist/x", sumOf(t, "fresh build")), nil
 
+	_ = f.h.run()
+	f.now = f.now.Add(15 * time.Minute)
 	actions := f.h.run()
 	if f.p.installed2 != "fresh build" {
 		t.Fatalf("download not installed, actions %v", actions)

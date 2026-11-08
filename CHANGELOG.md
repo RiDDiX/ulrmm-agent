@@ -1,5 +1,11 @@
 # Agent changelog
 
+## 2.08.11.2026 (2026-11-08)
+
+- self-healing repairs a changed agent binary only when it is still changed on a run at least 10 minutes later; a run between an update and the new agent's start no longer puts the old binary back (seen with a build the server did not ship yet); a missing binary is still repaired at once
+- a script that cannot be set up keeps its exit code in the result (85 setup failed, for example no signed-in user on Linux, 65 unsupported shell) instead of 1
+- Linux: the agent unit gets the product's current description text
+
 ## 1.08.11.2026 (2026-11-08)
 
 - macOS and FreeBSD: a reinstall removes the old agent only after the server accepted the installer token, so an expired token or no network keeps the old install; Windows still says "already installed" first

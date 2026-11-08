@@ -635,7 +635,11 @@ func (a *Agent) rpcRunScript(r *rpcReq) {
 		RunID:    p.ID,
 	}
 	if err != nil {
-		res.Out, res.ErrOut, res.ExitCode = "", err.Error(), 1
+		// the setup codes (85 setup failed, 65 did not start) stay
+		res.Out, res.ErrOut = "", err.Error()
+		if res.ExitCode == 0 {
+			res.ExitCode = 1
+		}
 	}
 
 	if p.Func == "runscriptfull" {

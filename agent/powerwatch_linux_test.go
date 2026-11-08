@@ -150,7 +150,7 @@ func TestAnnouncePowerOncePerKind(t *testing.T) {
 func TestUpgradeUnit(t *testing.T) {
 	old := "[Unit]\nDescription=Agent\n\n[Service]\nType=simple\nExecStart=/mnt/x/agent -m svc\nKillMode=process\n\n[Install]\nWantedBy=multi-user.target\n"
 	got := upgradeUnit(old)
-	want := "[Unit]\nDescription=Agent\nAfter=network.target nss-lookup.target\n\n[Service]\nType=simple\nExecStart=/mnt/x/agent -m svc\nKillMode=process\nTimeoutStopSec=15\n\n[Install]\nWantedBy=multi-user.target\n"
+	want := "[Unit]\nDescription=" + nixUnitDescription + "\nAfter=network.target nss-lookup.target\n\n[Service]\nType=simple\nExecStart=/mnt/x/agent -m svc\nKillMode=process\nTimeoutStopSec=15\n\n[Install]\nWantedBy=multi-user.target\n"
 	if got != want {
 		t.Fatalf("got %q", got)
 	}

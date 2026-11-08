@@ -40,6 +40,9 @@ type healState struct {
 	// first run that found the heartbeat stale; a run right after a wake
 	// can come before the agent wrote a new one
 	StaleSince time.Time `json:"stale_since,omitzero"`
+	// first run that found a changed binary; an update replaces it before
+	// the new agent records it, and the server may not ship that build yet
+	ModifiedSince time.Time `json:"modified_since,omitzero"`
 }
 
 // healDownload is what the server says the current build for this agent is.
@@ -199,12 +202,20 @@ func (h *healer) run() []string {
 			// a newer or rebuilt agent the service has not recorded yet
 			m.Version, m.SHA256 = cur.Version, sum
 			_ = writeJSON(h.manifestPath(), m)
+			st.ModifiedSince = time.Time{}
+		case err == nil && (st.ModifiedSince.IsZero() || h.now().Before(st.ModifiedSince)):
+			st.ModifiedSince = h.now()
+			h.logf("selfheal: the agent binary changed, checking again on the next run")
+		case err == nil && h.now().Sub(st.ModifiedSince) < healStaleConfirm:
 		case repair("binary " + state):
+			st.ModifiedSince = time.Time{}
 			if a, ok := h.repairBinary(m, cur, cerr); ok {
 				actions = append(actions, fmt.Sprintf("agent binary was %s: %s", state, a))
 				restarted = true
 			}
 		}
+	} else {
+		st.ModifiedSince = time.Time{}
 	}
 
 	stale := h.heartbeatStale()

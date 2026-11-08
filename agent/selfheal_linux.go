@@ -71,7 +71,7 @@ TimeoutStopSec=15
 
 [Install]
 WantedBy=multi-user.target
-`, BrandAgentName, mainPath)
+`, nixUnitDescription, mainPath)
 	if _, err := writeIfChanged(l.unitPath(IdentNixSvc), unit, 0o644); err != nil {
 		return err
 	}

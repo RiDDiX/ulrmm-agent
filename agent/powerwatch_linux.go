@@ -229,7 +229,16 @@ func refreshUnit() {
 	}
 }
 
+// nixUnitDescription is the unit text of the server's install script; a unit
+// from an older install may still carry a former product name.
+var nixUnitDescription = BrandProductName + " Linux Agent"
+
 func upgradeUnit(s string) string {
+	if i := strings.Index(s, "\nDescription="); i >= 0 {
+		if n := strings.IndexByte(s[i+1:], '\n'); n >= 0 && s[i+1:i+1+n] != "Description="+nixUnitDescription {
+			s = s[:i+1] + "Description=" + nixUnitDescription + s[i+1+n:]
+		}
+	}
 	if !strings.Contains(s, "\nAfter=") {
 		s = strings.Replace(s, "\n\n[Service]", "\nAfter=network.target nss-lookup.target\n\n[Service]", 1)
 	}
