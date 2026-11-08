@@ -115,9 +115,10 @@ func TestDiskCheckHung(t *testing.T) {
 	if time.Since(began) > time.Second {
 		t.Fatal("check blocked", time.Since(began))
 	}
+	time.Sleep(1100 * time.Millisecond)
 	began = time.Now()
-	if _, err := statBounded("/mnt/nfs", 20*time.Millisecond); !errors.Is(err, errStatTimeout) || time.Since(began) > time.Second {
-		t.Fatal("second call while the first hangs:", err, time.Since(began))
+	if _, err := statBounded("/mnt/nfs", time.Second); !errors.Is(err, errStatTimeout) || time.Since(began) > 300*time.Millisecond {
+		t.Fatal("a call hung longer than the caller's limit must fail at once:", err, time.Since(began))
 	}
 	statInFlight.Lock()
 	inFlight := statInFlight.m["/mnt/nfs"] != nil

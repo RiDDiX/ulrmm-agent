@@ -47,3 +47,25 @@ func TestForcedDriverPushWhileOneRuns(t *testing.T) {
 		t.Fatal("flags left set")
 	}
 }
+
+// the loop runs under the service's recover: a panicking collection must
+// leave the next push possible
+func TestDriverPushAfterPanic(t *testing.T) {
+	var hits atomic.Int32
+	a := apiAgent(t, func(w http.ResponseWriter, r *http.Request) { hits.Add(1) })
+	driversOffUntil.Store(0)
+	func() {
+		defer func() { _ = recover() }()
+		a.pushDrivers(true, func() driverReport { panic("wmi") })
+	}()
+	if driversRunning.Load() {
+		t.Fatal("a panic kept the push flag")
+	}
+	driversRerun.Store(false)
+	a.pushDrivers(true, func() driverReport {
+		return driverReport{V: 1, Drivers: []driverRow{}, Problems: []problemRow{}, Errors: []string{}}
+	})
+	if hits.Load() != 1 {
+		t.Fatal("no push after the panic")
+	}
+}

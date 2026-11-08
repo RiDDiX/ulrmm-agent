@@ -200,17 +200,24 @@ var (
 
 // u and err are set before done closes
 type statCall struct {
-	done chan struct{}
-	u    *disk.UsageStat
-	err  error
+	done  chan struct{}
+	start time.Time
+	u     *disk.UsageStat
+	err   error
 }
 
-// statBounded waits at most d for the usage of path.
+// statBounded waits at most d for the usage of path. A call that has run
+// longer than d already counts as hung, so a dead mount costs each caller
+// nothing more.
 func statBounded(path string, d time.Duration) (*disk.UsageStat, error) {
 	statInFlight.Lock()
 	c := statInFlight.m[path]
+	if c != nil && time.Since(c.start) >= d {
+		statInFlight.Unlock()
+		return nil, errStatTimeout
+	}
 	if c == nil {
-		c = &statCall{done: make(chan struct{})}
+		c = &statCall{done: make(chan struct{}), start: time.Now()}
 		statInFlight.m[path] = c
 		go func() {
 			c.u, c.err = diskUsage(path)

@@ -1,5 +1,10 @@
 # Agent changelog
 
+## 3.08.11.2026 (2026-11-08)
+
+- Windows: a driver push that fails hard no longer stops all later driver pushes until the service restarts
+- a disk whose usage query hangs answers "does not respond" at once to every later check, instead of after each check's own wait
+
 ## 2.08.11.2026 (2026-11-08)
 
 - self-healing repairs a changed agent binary only when it is still changed on a run at least 10 minutes later; a run between an update and the new agent's start no longer puts the old binary back (seen with a build the server did not ship yet); a missing binary is still repaired at once

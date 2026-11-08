@@ -260,8 +260,11 @@ func (a *Agent) pushDrivers(force bool, collect func() driverReport) {
 	// whoever holds driversRunning looks at driversRerun after its push, so
 	// a forced one that finds it taken is not lost
 	for driversRunning.CompareAndSwap(false, true) {
-		a.pushDriversOnce(driversRerun.Swap(false), collect)
-		driversRunning.Store(false)
+		func() {
+			// a panic in the collection must not keep the flag for good
+			defer driversRunning.Store(false)
+			a.pushDriversOnce(driversRerun.Swap(false), collect)
+		}()
 		if !driversRerun.Load() {
 			return
 		}
