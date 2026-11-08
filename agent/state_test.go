@@ -5,6 +5,7 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/shirou/gopsutil/v3/cpu"
+	"github.com/shirou/gopsutil/v3/disk"
 	gnet "github.com/shirou/gopsutil/v3/net"
 )
 
@@ -70,6 +72,20 @@ func TestStatMountsStale(t *testing.T) {
 	}
 	if ms[2].Stale || ms[2].Size != nil {
 		t.Fatalf("a failing statfs is not stale: %+v", ms[2])
+	}
+	stateMem.Lock()
+	stateMem.stale = nil
+	stateMem.Unlock()
+
+	old := diskUsage
+	defer func() { diskUsage = old }()
+	diskUsage = func(string) (*disk.UsageStat, error) {
+		time.Sleep(100 * time.Millisecond)
+		return &disk.UsageStat{Total: 10, Used: 5, UsedPercent: 50}, nil
+	}
+	ms = statMounts([]SMount{{Mount: "/stacked"}, {Mount: "/stacked"}})
+	if ms[0].Stale || ms[1].Stale || ms[1].Size == nil || *ms[1].Size != 10 {
+		t.Fatalf("stacked mount: %+v", ms)
 	}
 	stateMem.Lock()
 	stateMem.stale = nil
@@ -387,5 +403,19 @@ func TestCollectStateLive(t *testing.T) {
 	if testing.Verbose() {
 		b, _ = encodeState(again)
 		t.Logf("%s", b)
+	}
+}
+
+func TestCapIfacesKeepsPhysical(t *testing.T) {
+	var ifs []SIface
+	for i := range 40 {
+		ifs = append(ifs, SIface{Name: fmt.Sprintf("br-%02d", i), Kind: "bridge"})
+	}
+	ifs = append(ifs, SIface{Name: "docker0", Kind: "bridge"}, SIface{Name: "eth0", Kind: "ether"}, SIface{Name: "wlan0", Kind: "wifi"})
+	s := &State{Net: &SNet{Ifaces: ifs}}
+	s.capAll()
+	got := s.Net.Ifaces
+	if len(got) != 32 || got[0].Name != "eth0" || got[1].Name != "wlan0" || got[2].Name != "br-00" {
+		t.Fatalf("%d: %v %v %v", len(got), got[0].Name, got[1].Name, got[2].Name)
 	}
 }

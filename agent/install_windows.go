@@ -11,7 +11,6 @@ import (
 	"strconv"
 
 	rmm "git.riddix.de/RiDDiX/ulrmm-agent/shared"
-	"github.com/gonutz/w32/v2"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
@@ -194,8 +193,8 @@ func (a *Agent) checkExistingAndRemove(silent bool) {
 	}
 	k.Close()
 	text := existingInstallText(filepath.Join(a.ProgramDir, a.GetUninstallExe()))
-	if !silent && w32.GetForegroundWindow() != 0 {
-		w32.MessageBox(0, text, BrandProductName, w32.MB_OK|w32.MB_ICONWARNING)
+	if !silent && windows.GetForegroundWindow() != 0 {
+		messageBox(text, BrandProductName, windows.MB_OK|windows.MB_ICONWARNING)
 	} else {
 		fmt.Println(text)
 	}
@@ -205,12 +204,12 @@ func (a *Agent) checkExistingAndRemove(silent bool) {
 // installerMsg shows msg in a message box for an interactive install and
 // prints it otherwise. "error" ends the installer with exit code 1.
 func (a *Agent) installerMsg(msg, level string, silent bool) {
-	if !silent && w32.GetForegroundWindow() != 0 {
-		icon := uint(w32.MB_ICONINFORMATION)
+	if !silent && windows.GetForegroundWindow() != 0 {
+		icon := uint32(windows.MB_ICONINFORMATION)
 		if level == "error" {
-			icon = w32.MB_ICONERROR
+			icon = windows.MB_ICONERROR
 		}
-		w32.MessageBox(0, msg, BrandProductName, w32.MB_OK|icon)
+		messageBox(msg, BrandProductName, windows.MB_OK|icon)
 	} else {
 		fmt.Println(msg)
 	}

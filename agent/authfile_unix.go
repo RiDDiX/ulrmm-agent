@@ -11,7 +11,8 @@ import (
 	"syscall"
 )
 
-func authFileOwnerOK(path string, fi os.FileInfo) error {
+func authFileOwnerOK(f *os.File, fi os.FileInfo) error {
+	path := f.Name()
 	if st, ok := fi.Sys().(*syscall.Stat_t); !ok || st.Uid != 0 {
 		return fmt.Errorf("%s must belong to root", path)
 	}

@@ -148,6 +148,9 @@ func runAppWith(ctx context.Context, attr func(*exec.Cmd), dir string, argv ...s
 	cmd.WaitDelay = 10 * time.Second
 	attr(cmd)
 	err = cmd.Run()
+	if err == nil && (o.over || e.over) {
+		err = errOutputTooLarge
+	}
 	code = -1
 	if cmd.ProcessState != nil {
 		code = cmd.ProcessState.ExitCode()

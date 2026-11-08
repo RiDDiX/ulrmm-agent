@@ -10,9 +10,13 @@ import (
 	"net/http"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	rmm "git.riddix.de/RiDDiX/ulrmm-agent/shared"
+	"github.com/shirou/gopsutil/v3/disk"
+	"github.com/sirupsen/logrus"
 )
 
 func TestFilterEventLog(t *testing.T) {
@@ -54,30 +58,72 @@ func TestFilterEventLog(t *testing.T) {
 
 func TestWinSvcVerdict(t *testing.T) {
 	started := false
-	start := func(ok bool) func() bool { return func() bool { started = true; return ok } }
+	start := func(after string) func() string { return func() string { started = true; return after } }
 	cases := []struct {
 		name         string
 		c            rmm.CheckDef
 		state        string
 		err          error
-		startOK      bool
+		after        string
 		status, info string
 		startCalled  bool
 	}{
-		{"running", rmm.CheckDef{}, "running", nil, false, "passing", "Status: running", false},
-		{"start pending allowed", rmm.CheckDef{OKIfStarting: true}, "start_pending", nil, false, "passing", "Status: start_pending", false},
-		{"stopped", rmm.CheckDef{}, "stopped", nil, false, "failing", "Status: stopped", false},
-		{"restarted", rmm.CheckDef{Restart: true}, "stopped", nil, true, "passing", "Status: running", true},
-		{"restart failed", rmm.CheckDef{Restart: true}, "stopped", nil, false, "failing", "Status: stopped", true},
-		{"missing allowed", rmm.CheckDef{OKIfMissing: true}, "", errors.New("no such service"), false, "passing", "no such service", false},
-		{"missing", rmm.CheckDef{}, "", errors.New("no such service"), false, "failing", "no such service", false},
+		{"running", rmm.CheckDef{}, "running", nil, "", "passing", "Status: running", false},
+		{"start pending allowed", rmm.CheckDef{OKIfStarting: true}, "start_pending", nil, "", "passing", "Status: start_pending", false},
+		{"stopped", rmm.CheckDef{}, "stopped", nil, "", "failing", "Status: stopped", false},
+		{"restarted", rmm.CheckDef{Restart: true}, "stopped", nil, "running", "passing", "Status: running", true},
+		{"restart failed", rmm.CheckDef{Restart: true}, "stopped", nil, "stopped", "failing", "Status: stopped", true},
+		{"start accepted, not running", rmm.CheckDef{Restart: true}, "stopped", nil, "start_pending", "failing", "Status: start_pending", true},
+		{"start accepted, starting allowed", rmm.CheckDef{Restart: true, OKIfStarting: true}, "stopped", nil, "start_pending", "passing", "Status: start_pending", true},
+		{"missing allowed", rmm.CheckDef{OKIfMissing: true}, "", errors.New("no such service"), "", "passing", "no such service", false},
+		{"missing", rmm.CheckDef{}, "", errors.New("no such service"), "", "failing", "no such service", false},
 	}
 	for _, c := range cases {
 		started = false
-		status, info := winSvcVerdict(c.c, c.state, c.err, start(c.startOK))
+		status, info := winSvcVerdict(c.c, c.state, c.err, start(c.after))
 		if status != c.status || info != c.info || started != c.startCalled {
 			t.Fatalf("%s: got %q %q started=%v", c.name, status, info, started)
 		}
+	}
+
+	seq := []string{"start_pending", "start_pending", "running"}
+	n := 0
+	get := func() (string, error) { s := seq[min(n, len(seq)-1)]; n++; return s, nil }
+	if s := waitSvcRunning(get, time.Second, time.Millisecond); s != "running" || n != 3 {
+		t.Fatalf("got %q after %d polls", s, n)
+	}
+	stopped := func() (string, error) { return "stopped", nil }
+	began := time.Now()
+	if s := waitSvcRunning(stopped, 30*time.Millisecond, 5*time.Millisecond); s != "stopped" || time.Since(began) > time.Second {
+		t.Fatalf("got %q after %v", s, time.Since(began))
+	}
+}
+
+func TestDiskCheckHung(t *testing.T) {
+	release := make(chan struct{})
+	var calls atomic.Int32
+	old, oldWait := diskUsage, diskCheckWait
+	diskUsage = func(string) (*disk.UsageStat, error) { calls.Add(1); <-release; return &disk.UsageStat{Total: 1}, nil }
+	diskCheckWait = 20 * time.Millisecond
+	defer func() { close(release); diskUsage, diskCheckWait = old, oldWait }()
+
+	a := &Agent{Logger: logrus.New()}
+	began := time.Now()
+	if r := a.DiskCheck(rmm.CheckDef{Drive: "/mnt/nfs"}); r.Found || r.Info != "Disk /mnt/nfs does not respond" {
+		t.Fatalf("%+v", r)
+	}
+	if time.Since(began) > time.Second {
+		t.Fatal("check blocked", time.Since(began))
+	}
+	began = time.Now()
+	if _, err := statBounded("/mnt/nfs", 5*time.Second); !errors.Is(err, errStatTimeout) || time.Since(began) > time.Second {
+		t.Fatal("second call while the first hangs:", err, time.Since(began))
+	}
+	statInFlight.Lock()
+	inFlight := statInFlight.m["/mnt/nfs"]
+	statInFlight.Unlock()
+	if calls.Load() != 1 || !inFlight {
+		t.Fatalf("calls %d in flight %v", calls.Load(), inFlight)
 	}
 }
 

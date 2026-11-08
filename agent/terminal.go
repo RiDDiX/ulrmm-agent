@@ -205,6 +205,7 @@ func (a *Agent) StartTerminalSession(sessionID, shell string, nc *nats.Conn) err
 		}
 		a.stopTerminalSession(sessionID)
 		a.publishTerminal(nc, sessionID, map[string]interface{}{"done": true, "exit_code": code})
+		forgetFrames(fmt.Sprintf("%s.terminal.%s", a.AgentID, sessionID), time.Minute)
 	}()
 	return nil
 }

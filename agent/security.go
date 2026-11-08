@@ -230,7 +230,7 @@ const maxAuthFile = 4096
 // ReadAuthFile returns the installer token in path and deletes the file.
 // It must be a regular file (no link) that only root may read (mode 0600
 // or stricter), on Windows owned by Administrators, SYSTEM or the user
-// running the installer.
+// running the installer and readable by no one else.
 func ReadAuthFile(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -248,7 +248,7 @@ func ReadAuthFile(path string) (string, error) {
 	if !li.Mode().IsRegular() || !os.SameFile(fi, li) {
 		return "", fmt.Errorf("%s is not a regular file", path)
 	}
-	if err := authFileOwnerOK(path, fi); err != nil {
+	if err := authFileOwnerOK(f, fi); err != nil {
 		return "", err
 	}
 	b, err := io.ReadAll(io.LimitReader(f, maxAuthFile+1))

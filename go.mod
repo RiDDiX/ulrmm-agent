@@ -8,7 +8,6 @@ require (
 	github.com/go-ole/go-ole v1.3.0
 	github.com/go-ping/ping v1.1.0
 	github.com/go-resty/resty/v2 v2.16.5
-	github.com/gonutz/w32/v2 v2.11.1
 	github.com/iamacarpet/go-win64api v0.0.0-20230324134531-ef6dbdd6db97
 	github.com/nats-io/nats.go v1.38.0
 	github.com/rickb777/date v1.19.1

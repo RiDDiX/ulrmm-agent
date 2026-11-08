@@ -88,6 +88,9 @@ func nixRun(ctx context.Context, name string, args ...string) (string, error) {
 		_, err := io.Copy(&out, r)
 		return err
 	}, name, args...)
+	if err == nil && out.over {
+		err = errOutputTooLarge
+	}
 	return out.String(), err
 }
 

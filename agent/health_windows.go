@@ -10,7 +10,6 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/StackExchange/wmi"
 	ole "github.com/go-ole/go-ole"
 	"github.com/go-ole/go-ole/oleutil"
 	"golang.org/x/sys/windows"
@@ -23,11 +22,11 @@ const (
 
 // one WMI query for all nics, joined on the adapter name (= net.Interface name)
 func wolStates(names []string) map[string]string {
-	var dst []struct {
+	dst, err := wmiNS[struct {
 		Name              string
 		WakeOnMagicPacket uint32
-	}
-	if err := wmi.QueryNamespace("SELECT Name, WakeOnMagicPacket FROM MSFT_NetAdapterPowerManagementSettingData", &dst, nsStdCimv2); err != nil {
+	}]("SELECT Name, WakeOnMagicPacket FROM MSFT_NetAdapterPowerManagementSettingData", nsStdCimv2)
+	if err != nil {
 		return nil
 	}
 	ret := make(map[string]string)
@@ -93,7 +92,8 @@ func winSecurity(h *Health) {
 	// workstation (VER_NT_WORKSTATION) a failed query makes the server's check incomplete.
 	var av []wscProduct
 	if windows.RtlGetVersion().ProductType == 1 {
-		if err := wmi.QueryNamespace("SELECT displayName, productState FROM AntiVirusProduct", &av, `root\SecurityCenter2`); err != nil {
+		var err error
+		if av, err = wmiNS[wscProduct]("SELECT displayName, productState FROM AntiVirusProduct", `root\SecurityCenter2`); err != nil {
 			h.errf("security center: %v", err)
 		}
 	}
@@ -104,8 +104,7 @@ func winSecurity(h *Health) {
 		}
 	}
 
-	var mp []mpStatus
-	if err := wmi.QueryNamespace("SELECT AMRunningMode, AntivirusEnabled, RealTimeProtectionEnabled, AntivirusSignatureAge, AntivirusSignatureLastUpdated FROM MSFT_MpComputerStatus", &mp, `root\Microsoft\Windows\Defender`); err == nil && len(mp) > 0 {
+	if mp, err := wmiNS[mpStatus]("SELECT AMRunningMode, AntivirusEnabled, RealTimeProtectionEnabled, AntivirusSignatureAge, AntivirusSignatureLastUpdated FROM MSFT_MpComputerStatus", `root\Microsoft\Windows\Defender`); err == nil && len(mp) > 0 {
 		m := mp[0]
 		d := &HDefender{Mode: clip(m.AMRunningMode, 32), AV: m.AntivirusEnabled, RTP: m.RealTimeProtectionEnabled}
 		// 65535 = never updated / not running
@@ -119,8 +118,7 @@ func winSecurity(h *Health) {
 	}
 
 	fw := &HFirewall{Products: make([]HFwProduct, 0)}
-	var fwp []wscProduct
-	if err := wmi.QueryNamespace("SELECT displayName, productState FROM FirewallProduct", &fwp, `root\SecurityCenter2`); err == nil {
+	if fwp, err := wmiNS[wscProduct]("SELECT displayName, productState FROM FirewallProduct", `root\SecurityCenter2`); err == nil {
 		for _, p := range fwp {
 			on, _ := wscState(p.ProductState)
 			if len(fw.Products) < healthMaxList {
@@ -201,8 +199,8 @@ func fwPolicy() (map[string]bool, []string, error) {
 
 func winDisks(ctx context.Context, h *Health) {
 	h.Disks = make([]HDisk, 0)
-	var pds []physicalDisk
-	if err := wmi.QueryNamespace("SELECT ObjectId, FriendlyName, HealthStatus, MediaType, BusType FROM MSFT_PhysicalDisk", &pds, nsStorage); err != nil {
+	pds, err := wmiNS[physicalDisk]("SELECT ObjectId, FriendlyName, HealthStatus, MediaType, BusType FROM MSFT_PhysicalDisk", nsStorage)
+	if err != nil {
 		h.errf("MSFT_PhysicalDisk: %v", err)
 		return
 	}
@@ -222,9 +220,8 @@ func winDisks(ctx context.Context, h *Health) {
 			d.Health = "unknown"
 		}
 		// Temperature 0 = not reported (usb bridges), Wear is 0 even on old ssds
-		var rc []reliabilityCounter
 		q := fmt.Sprintf(`ASSOCIATORS OF {MSFT_PhysicalDisk.ObjectId="%s"} WHERE AssocClass = MSFT_PhysicalDiskToStorageReliabilityCounter`, wqlEscape(pd.ObjectId))
-		if err := wmi.QueryNamespace(q, &rc, nsStorage); err == nil && len(rc) > 0 {
+		if rc, err := wmiNS[reliabilityCounter](q, nsStorage); err == nil && len(rc) > 0 {
 			if rc[0].Temperature > 0 {
 				d.TempC = saneC(float64(rc[0].Temperature), false)
 			}
@@ -267,22 +264,18 @@ func winMedia(m uint16) string {
 
 // not verified on hardware: no Windows laptop in the fleet
 func winBattery(h *Health) {
-	var bats []struct{ Availability uint16 }
-	if err := wmi.Query("SELECT Availability FROM Win32_Battery", &bats); err != nil || len(bats) == 0 {
+	if bats, err := wmiNS[struct{ Availability uint16 }]("SELECT Availability FROM Win32_Battery", `root\cimv2`); err != nil || len(bats) == 0 {
 		return
 	}
 	bat := &HBattery{}
-	var design []struct{ DesignedCapacity uint32 }
-	var full []struct{ FullChargedCapacity uint32 }
-	var cycles []struct{ CycleCount uint32 }
-	e1 := wmi.QueryNamespace("SELECT DesignedCapacity FROM BatteryStaticData", &design, `root\wmi`)
-	e2 := wmi.QueryNamespace("SELECT FullChargedCapacity FROM BatteryFullChargedCapacity", &full, `root\wmi`)
+	design, e1 := wmiNS[struct{ DesignedCapacity uint32 }]("SELECT DesignedCapacity FROM BatteryStaticData", `root\wmi`)
+	full, e2 := wmiNS[struct{ FullChargedCapacity uint32 }]("SELECT FullChargedCapacity FROM BatteryFullChargedCapacity", `root\wmi`)
 	if e1 == nil && e2 == nil && len(design) > 0 && len(full) > 0 && design[0].DesignedCapacity > 0 {
 		bat.MaxCapacityPct = ptr(int(uint64(full[0].FullChargedCapacity) * 100 / uint64(design[0].DesignedCapacity)))
 	} else {
 		h.errf("battery capacity not available")
 	}
-	if err := wmi.QueryNamespace("SELECT CycleCount FROM BatteryCycleCount", &cycles, `root\wmi`); err == nil && len(cycles) > 0 && cycles[0].CycleCount > 0 {
+	if cycles, err := wmiNS[struct{ CycleCount uint32 }]("SELECT CycleCount FROM BatteryCycleCount", `root\wmi`); err == nil && len(cycles) > 0 && cycles[0].CycleCount > 0 {
 		bat.Cycles = ptr(int(cycles[0].CycleCount))
 	}
 	h.Battery = bat

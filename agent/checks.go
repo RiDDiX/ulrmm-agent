@@ -5,6 +5,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	mrand "math/rand"
@@ -14,7 +15,6 @@ import (
 	"time"
 
 	rmm "git.riddix.de/RiDDiX/ulrmm-agent/shared"
-	"github.com/shirou/gopsutil/v3/disk"
 )
 
 // Check results go to PATCH /api/v3/checkrunner/ as JSON. Each one starts
@@ -167,10 +167,13 @@ func (a *Agent) sendCheckResult(payload interface{}) {
 
 func (a *Agent) DiskCheck(c rmm.CheckDef) DiskCheckResult {
 	res := DiskCheckResult{resultHead: a.checkHead(c)}
-	usage, err := disk.Usage(c.Drive)
+	usage, err := statBounded(c.Drive, diskCheckWait)
 	if err != nil {
 		a.Logger.Debugln("DiskCheck():", err)
 		res.Info = fmt.Sprintf("Disk %s does not exist", c.Drive)
+		if errors.Is(err, errStatTimeout) {
+			res.Info = fmt.Sprintf("Disk %s does not respond", c.Drive)
+		}
 		return res
 	}
 	res.Found = true
@@ -217,29 +220,45 @@ func (a *Agent) ScriptCheck(c rmm.CheckDef) ScriptCheckResult {
 
 func (a *Agent) WinSvcCheck(c rmm.CheckDef) WinSvcCheckResult {
 	state, err := GetServiceStatus(c.Svc)
-	status, info := winSvcVerdict(c, state, err, func() bool {
-		return a.ControlService(c.Svc, "start").OK
+	status, info := winSvcVerdict(c, state, err, func() string {
+		if !a.ControlService(c.Svc, "start").OK {
+			return state
+		}
+		return waitSvcRunning(func() (string, error) { return GetServiceStatus(c.Svc) }, svcStartWait, 250*time.Millisecond)
 	})
 	return WinSvcCheckResult{resultHead: a.checkHead(c), Info: info, State: status}
 }
 
-// start is called only when the check may restart the service.
-func winSvcVerdict(c rmm.CheckDef, state string, err error, start func() bool) (status, moreInfo string) {
+var svcStartWait = 5 * time.Second
+
+// the SCM accepts a start before the service runs; the last state seen
+// within d counts
+func waitSvcRunning(get func() (string, error), d, every time.Duration) string {
+	deadline := time.Now().Add(d)
+	for {
+		state, err := get()
+		if err == nil && state == "running" || time.Now().After(deadline) {
+			return state
+		}
+		time.Sleep(every)
+	}
+}
+
+// start is called only when the check may restart the service; it returns
+// the state after the attempt.
+func winSvcVerdict(c rmm.CheckDef, state string, err error, start func() string) (status, moreInfo string) {
 	if err != nil {
 		if c.OKIfMissing {
 			return "passing", err.Error()
 		}
 		return "failing", err.Error()
 	}
-	switch {
-	case state == "running":
-		return "passing", "Status: running"
-	case state == "start_pending" && c.OKIfStarting:
+	ok := func(s string) bool { return s == "running" || s == "start_pending" && c.OKIfStarting }
+	if !ok(state) && c.Restart {
+		state = start()
+	}
+	if ok(state) {
 		return "passing", "Status: " + state
-	case c.Restart:
-		if start() {
-			return "passing", "Status: running"
-		}
 	}
 	return "failing", "Status: " + state
 }

@@ -21,7 +21,6 @@ import (
 	"github.com/elastic/go-sysinfo"
 	ole "github.com/go-ole/go-ole"
 	"github.com/go-ole/go-ole/oleutil"
-	"github.com/gonutz/w32/v2"
 	"github.com/kardianos/service"
 	nats "github.com/nats-io/nats.go"
 	"github.com/shirou/gopsutil/v3/disk"
@@ -119,19 +118,20 @@ func statusOrMissing(name string) string {
 func ShowStatus(version string) {
 	agentState := statusOrMissing(winSvcName)
 	meshState := statusOrMissing(meshSvcName)
-	if w32.GetForegroundWindow() == 0 {
+	if windows.GetForegroundWindow() == 0 {
 		fmt.Println(BrandProductName, "Version", version)
 		fmt.Printf("%s: %s\n", BrandAgentName, agentState)
 		fmt.Printf("Mesh Agent: %s\n", meshState)
 		return
 	}
-	if con := w32.GetConsoleWindow(); con != 0 {
-		if _, pid := w32.GetWindowThreadProcessId(con); int(pid) == os.Getpid() {
-			w32.ShowWindow(con, w32.SW_HIDE)
+	if con := getConsoleWindow(); con != 0 {
+		var pid uint32
+		if _, err := windows.GetWindowThreadProcessId(con, &pid); err == nil && int(pid) == os.Getpid() {
+			showWindow(con, windows.SW_HIDE)
 		}
 	}
 	text := fmt.Sprintf("Agent: %s\n\nMesh Agent: %s", agentState, meshState)
-	w32.MessageBox(0, text, fmt.Sprintf("%s v%s", BrandProductName, version), w32.MB_OK|w32.MB_ICONINFORMATION)
+	messageBox(text, fmt.Sprintf("%s v%s", BrandProductName, version), windows.MB_OK|windows.MB_ICONINFORMATION)
 }
 
 // PlatVer is the feature release, for example 24H2 (older builds: 2009).
@@ -756,7 +756,8 @@ func EnableRDP() {
 	if err := setDWord(`SYSTEM\CurrentControlSet\Control\Terminal Server`, "fDenyTSConnections", 0); err != nil {
 		fmt.Println("fDenyTSConnections:", err)
 	}
-	if out, err := runRaw(10*time.Second, netshExe(), `netsh advfirewall firewall set rule group="remote desktop" new enable=Yes`); err != nil {
+	// the group name is localized, its resource id is not
+	if out, err := runRaw(10*time.Second, netshExe(), `netsh advfirewall firewall set rule group="@FirewallAPI.dll,-28752" new enable=Yes`); err != nil {
 		fmt.Println("netsh:", err, strings.TrimSpace(out))
 	}
 }

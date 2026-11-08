@@ -5,6 +5,7 @@ package agent
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	rmm "git.riddix.de/RiDDiX/ulrmm-agent/shared"
@@ -12,9 +13,19 @@ import (
 
 // Windows Update through the Windows Update Agent (wua_windows.go).
 
+var (
+	wuaScanWait    = 30 * time.Minute
+	wuaInstallWait = 2 * time.Hour
+)
+
 // A failed search sends nothing, so the server keeps what it knows.
 func (a *Agent) GetWinUpdates(drivers bool) {
-	updates, err := WUAUpdates(wuaScanQuery(drivers))
+	var updates []rmm.UpdatePackage
+	err := wuaBounded(wuaScanWait, func() error {
+		u, err := WUAUpdates(wuaScanQuery(drivers))
+		updates = u
+		return err
+	})
 	if err != nil {
 		a.Logger.Errorln("GetWinUpdates():", err)
 		return
@@ -25,17 +36,42 @@ func (a *Agent) GetWinUpdates(drivers bool) {
 	}
 }
 
-// Reports each result and, at the end, whether a restart is pending.
+// Reports each result and, at the end, whether a restart is pending. When
+// the session cannot be had or the run overruns, the updates not handled yet
+// are reported as failed.
 func (a *Agent) InstallUpdates(guids []string) {
-	session, err := NewUpdateSession()
+	var mu sync.Mutex
+	done, gaveUp := 0, false
+	err := wuaBounded(wuaInstallWait, func() error {
+		session, err := NewUpdateSession()
+		if err != nil {
+			return fmt.Errorf("NewUpdateSession(): %w", err)
+		}
+		defer session.Close()
+		for _, guid := range guids {
+			mu.Lock()
+			stop := gaveUp
+			mu.Unlock()
+			if stop {
+				return nil
+			}
+			a.installUpdate(session, guid)
+			mu.Lock()
+			done++
+			mu.Unlock()
+		}
+		return nil
+	})
 	if err != nil {
-		a.Logger.Errorln("InstallUpdates() NewUpdateSession():", err)
+		a.Logger.Errorln("InstallUpdates():", err)
+		mu.Lock()
+		gaveUp = true
+		left := guids[done:]
+		mu.Unlock()
+		for _, guid := range left {
+			a.reportInstall(guid, false)
+		}
 		return
-	}
-	defer session.Close()
-
-	for _, guid := range guids {
-		a.installUpdate(session, guid)
 	}
 
 	time.Sleep(5 * time.Second)
@@ -49,13 +85,15 @@ func (a *Agent) InstallUpdates(guids []string) {
 	}
 }
 
-func (a *Agent) installUpdate(s *IUpdateSession, guid string) {
-	report := func(ok bool) {
-		body := rmm.UpdateInstallResult{AgentID: a.AgentID, GUID: guid, OK: ok}
-		if _, err := a.rClient.R().SetBody(body).Patch("/api/v3/winupdates/"); err != nil {
-			a.Logger.Debugln("InstallUpdates() patch:", err)
-		}
+func (a *Agent) reportInstall(guid string, ok bool) {
+	body := rmm.UpdateInstallResult{AgentID: a.AgentID, GUID: guid, OK: ok}
+	if _, err := a.rClient.R().SetBody(body).Patch("/api/v3/winupdates/"); err != nil {
+		a.Logger.Debugln("InstallUpdates() patch:", err)
 	}
+}
+
+func (a *Agent) installUpdate(s *IUpdateSession, guid string) {
+	report := func(ok bool) { a.reportInstall(guid, ok) }
 	queries, ok := wuaIDQueries(guid)
 	if !ok {
 		a.Logger.Errorf("InstallUpdates(): %q is not an update id, skipped", guid)

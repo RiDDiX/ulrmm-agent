@@ -174,14 +174,27 @@ func clip(s string, n int) string {
 
 func ptr[T any](v T) *T { return &v }
 
-type capBuf struct{ bytes.Buffer }
+var errOutputTooLarge = errors.New("output too large")
+
+// capBuf keeps the first healthMaxOut bytes and drops the rest without
+// failing the write, so the child is not cut off mid-run; over tells the
+// caller. The buffer is not embedded: its ReadFrom would let io.Copy past
+// the cap.
+type capBuf struct {
+	buf  bytes.Buffer
+	over bool
+}
 
 func (b *capBuf) Write(p []byte) (int, error) {
-	if b.Len()+len(p) > healthMaxOut {
-		return 0, errors.New("output too large")
+	n := len(p)
+	if room := healthMaxOut - b.buf.Len(); n > room {
+		p, b.over = p[:room], true
 	}
-	return b.Buffer.Write(p)
+	b.buf.Write(p)
+	return n, nil
 }
+
+func (b *capBuf) String() string { return b.buf.String() }
 
 // fixed argv, no shell, 10 s per exec. stdout is returned even on a non-zero exit.
 func runOut(ctx context.Context, name string, args ...string) (string, error) {
@@ -191,6 +204,9 @@ func runOut(ctx context.Context, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdout = &out
 	err := cmd.Run()
+	if err == nil && out.over {
+		err = errOutputTooLarge
+	}
 	return out.String(), err
 }
 

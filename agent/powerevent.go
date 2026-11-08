@@ -102,6 +102,8 @@ func powerResumed() {
 // buffer), so the cancel waits for it, off the watcher, which must be back for
 // the next sleep notice.
 func (a *Agent) powerBack(nc *nats.Conn) {
+	// the heartbeat ticker missed the sleep; a heal run now must not see a hung agent
+	a.SelfHealHeartbeat()
 	powerResumed()
 	go func() {
 		for end := time.Now().Add(time.Minute); !nc.IsConnected() && time.Now().Before(end); {

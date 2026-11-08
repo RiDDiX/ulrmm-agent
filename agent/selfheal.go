@@ -372,6 +372,12 @@ func copyFileAtomic(src, dst string, mode os.FileMode) error {
 		os.Remove(tmp)
 		return err
 	}
+	// a power cut after the rename must not leave an empty binary
+	if err := out.Sync(); err != nil {
+		out.Close()
+		os.Remove(tmp)
+		return err
+	}
 	if err := out.Close(); err != nil {
 		os.Remove(tmp)
 		return err

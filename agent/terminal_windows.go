@@ -436,6 +436,10 @@ func (t *winTerm) watch(wait windows.Handle) {
 	if registered && wait != 0 {
 		_ = t.publish(map[string]interface{}{"done": true, "exit_code": int(code)})
 	}
+	if registered {
+		// after a kill, terminal_kill forgets it
+		forgetFrames(fmt.Sprintf("%s.terminal.%s", t.agentID, t.id), time.Minute)
+	}
 }
 
 // cleanup ends what is left of the session once: the job (the shell and

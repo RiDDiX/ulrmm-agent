@@ -91,15 +91,21 @@ func newSeed() []byte {
 
 // loadIdentity reads the master seed or makes one. An unreadable seed (a
 // DPAPI blob after a machine reset, a broken config) is replaced; the
-// server then refuses the new keys until an admin resets the identity.
+// server then refuses the new keys until an admin resets the identity. A
+// keystore or config that does not open now is no such case: the service
+// goes on with the token and tries again at its next start.
 func (a *Agent) loadIdentity() *identity {
 	m, err := unprotect(confIdentityKey)
 	if err == nil && m != nil && len(m) != 32 {
 		err = errUnwrap
 	}
 	if err != nil {
-		a.Logger.Errorln("identity:", err, "- making a new one")
 		a.queueSecurityEvent("identity_unreadable", err.Error())
+		if !errors.Is(err, errUnwrap) {
+			a.Logger.Errorln("identity:", err)
+			return nil
+		}
+		a.Logger.Errorln("identity:", err, "- making a new one")
 		m = nil
 	}
 	if m == nil {
@@ -284,6 +290,11 @@ func (a *Agent) rotateIdentity() bool {
 		return false
 	}
 	m, err := unprotect(confIdentityNext)
+	if err != nil && !errors.Is(err, errUnwrap) {
+		// a new seed would lose the one the server may have taken already
+		a.Logger.Errorln("identity rotation:", err)
+		return false
+	}
 	if err != nil || len(m) != 32 {
 		m = newSeed()
 		if err := protect(confIdentityNext, m); err != nil {

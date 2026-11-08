@@ -101,22 +101,17 @@ func saveAwakeState(st awakeState) error {
 	return os.Rename(tmp, awakeStateFile())
 }
 
-// powercfg /q SCHEME_CURRENT SUB_BUTTONS LIDACTION lines look like
-// "Current AC Power Setting Index: 0x00000001"
-var lidIndexRe = regexp.MustCompile(`Current (AC|DC) Power Setting Index: (0x[0-9A-Fa-f]+)`)
+// powercfg /qh SCHEME_CURRENT SUB_BUTTONS LIDACTION ends with the AC then
+// the DC index, "Current AC Power Setting Index: 0x00000001" on English
+// Windows. The labels are localized; the other lines carry no 0x value.
+var lidIndexRe = regexp.MustCompile(`\b0x[0-9A-Fa-f]{8}\b`)
 
 func parseLidIndexes(out string) (ac, dc string, err error) {
-	for _, m := range lidIndexRe.FindAllStringSubmatch(out, -1) {
-		if m[1] == "AC" {
-			ac = m[2]
-		} else {
-			dc = m[2]
-		}
-	}
-	if ac == "" || dc == "" {
+	m := lidIndexRe.FindAllString(out, -1)
+	if len(m) < 2 {
 		return "", "", errors.New("lid action not found in powercfg output")
 	}
-	return ac, dc, nil
+	return m[len(m)-2], m[len(m)-1], nil
 }
 
 // pmset -g lists " SleepDisabled\t\t1" under the system-wide settings while

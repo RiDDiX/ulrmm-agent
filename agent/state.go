@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -184,6 +185,49 @@ const (
 	staleSkip     = 30 * time.Minute
 	statfsWait    = 2 * time.Second
 )
+
+var (
+	diskUsage      = disk.Usage
+	diskCheckWait  = 5 * time.Second
+	errStatTimeout = errors.New("does not respond")
+	// paths whose statfs has not returned yet; a hung network mount keeps
+	// its one call and every later one fails at once
+	statInFlight = struct {
+		sync.Mutex
+		m map[string]bool
+	}{m: map[string]bool{}}
+)
+
+// statBounded waits at most d for the usage of path.
+func statBounded(path string, d time.Duration) (*disk.UsageStat, error) {
+	statInFlight.Lock()
+	if statInFlight.m[path] {
+		statInFlight.Unlock()
+		return nil, errStatTimeout
+	}
+	statInFlight.m[path] = true
+	statInFlight.Unlock()
+	type res struct {
+		u   *disk.UsageStat
+		err error
+	}
+	ch := make(chan res, 1)
+	go func() {
+		u, err := diskUsage(path)
+		statInFlight.Lock()
+		delete(statInFlight.m, path)
+		statInFlight.Unlock()
+		ch <- res{u, err}
+	}()
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case r := <-ch:
+		return r.u, r.err
+	case <-t.C:
+		return nil, errStatTimeout
+	}
+}
 
 // what the next push needs from this one; lives as long as the service process
 var stateMem struct {
@@ -684,14 +728,16 @@ func psMounts(ctx context.Context, e *errs) []SMount {
 }
 
 // statfs per mount in its own goroutine. One that has not answered within 2 s
-// is stale and left alone for 30 min, so a hung server leaks one goroutine at most.
+// is stale and left alone for 30 min; statBounded never starts a second call
+// while one still hangs.
 func statMounts(ms []SMount) []SMount {
 	if len(ms) > 32 {
 		ms = ms[:32]
 	}
 	type res struct {
-		i int
-		u *disk.UsageStat
+		i   int
+		u   *disk.UsageStat
+		err error
 	}
 	ch := make(chan res, len(ms))
 	now := time.Now()
@@ -700,46 +746,47 @@ func statMounts(ms []SMount) []SMount {
 		stateMem.stale = map[string]time.Time{}
 	}
 	waiting := 0
+	// a stacked mount lists its path twice; one call answers both
+	first := map[string]int{}
 	for i := range ms {
 		if now.Before(stateMem.stale[ms[i].Mount]) {
 			ms[i].Stale = true
 			continue
 		}
+		if _, ok := first[ms[i].Mount]; ok {
+			continue
+		}
+		first[ms[i].Mount] = i
 		waiting++
 		go func(i int, path string) {
-			u, err := disk.Usage(path)
-			if err != nil {
-				u = nil
-			}
-			ch <- res{i, u}
+			u, err := statBounded(path, statfsWait)
+			ch <- res{i, u, err}
 		}(i, ms[i].Mount)
 	}
 	stateMem.Unlock()
 
-	answered := make([]bool, len(ms))
-	timer := time.NewTimer(statfsWait)
-	defer timer.Stop()
-wait:
-	for waiting > 0 {
-		select {
-		case r := <-ch:
-			waiting--
-			answered[r.i] = true
-			if u := r.u; u != nil && u.Total > 0 {
-				m := &ms[r.i]
-				m.Size, m.Used, m.UsedPct = ptr(i64(u.Total)), ptr(i64(u.Used)), ptr(u.UsedPercent)
-				if u.InodesTotal > 0 {
-					m.InodePct = ptr(u.InodesUsedPercent)
-				}
+	for ; waiting > 0; waiting-- {
+		r := <-ch
+		if errors.Is(r.err, errStatTimeout) {
+			ms[r.i].Stale = true
+			continue
+		}
+		if u := r.u; r.err == nil && u != nil && u.Total > 0 {
+			m := &ms[r.i]
+			m.Size, m.Used, m.UsedPct = ptr(i64(u.Total)), ptr(i64(u.Used)), ptr(u.UsedPercent)
+			if u.InodesTotal > 0 {
+				m.InodePct = ptr(u.InodesUsedPercent)
 			}
-		case <-timer.C:
-			break wait
+		}
+	}
+	for i := range ms {
+		if j, ok := first[ms[i].Mount]; ok && j != i {
+			ms[i].Stale, ms[i].Size, ms[i].Used, ms[i].UsedPct, ms[i].InodePct = ms[j].Stale, ms[j].Size, ms[j].Used, ms[j].UsedPct, ms[j].InodePct
 		}
 	}
 	stateMem.Lock()
 	for i := range ms {
-		if !answered[i] && !ms[i].Stale {
-			ms[i].Stale = true
+		if ms[i].Stale && !now.Before(stateMem.stale[ms[i].Mount]) {
 			stateMem.stale[ms[i].Mount] = now.Add(staleSkip)
 		}
 	}
@@ -1044,6 +1091,10 @@ func (s *State) capAll() {
 		y.Sensors = capList(ss, 64)
 	}
 	if n := s.Net; n != nil {
+		// physical nics first: the cap and the trimming cut from the tail,
+		// where dozens of docker bridges would otherwise push eth0 out
+		phys := func(f SIface) bool { return f.Kind == "ether" || f.Kind == "bond" || f.Kind == "wifi" }
+		sort.SliceStable(n.Ifaces, func(i, j int) bool { return phys(n.Ifaces[i]) && !phys(n.Ifaces[j]) })
 		n.Ifaces = capList(n.Ifaces, 32)
 		for i := range n.Ifaces {
 			f := &n.Ifaces[i]

@@ -546,8 +546,9 @@ func (a *Agent) sdioRanges(ctx context.Context, c *http.Client, rs []sdioRange) 
 }
 
 // sdioDownload fetches a pack to dest and checks every piece it touches. A
-// broken download resumes at the last verified piece, three tries in all;
-// data that does not match the torrent is not tried again.
+// broken download resumes at the last verified piece, three tries counted
+// from the last one that verified a new piece; data that does not match the
+// torrent is not tried again.
 func (a *Agent) sdioDownload(ctx context.Context, c *http.Client, p *sdioPack, dest string, progress func(int64)) error {
 	var head, tail []byte
 	var err error
@@ -565,6 +566,7 @@ func (a *Agent) sdioDownload(ctx context.Context, c *http.Client, p *sdioPack, d
 	chk.progress = progress
 	var bad *sdioBadData
 	for try := 1; ; try++ {
+		from := chk.verified
 		if err = f.Truncate(chk.verified); err != nil {
 			return err
 		}
@@ -575,6 +577,10 @@ func (a *Agent) sdioDownload(ctx context.Context, c *http.Client, p *sdioPack, d
 		err = a.sdioGet(ctx, c, p.URL, chk.pos, -1, io.MultiWriter(f, chk))
 		if err == nil && chk.pos < p.Size {
 			err = fmt.Errorf("the download ended after %d of %d bytes", chk.pos, p.Size)
+		}
+		// a try that verified new pieces starts the count again
+		if chk.verified > from {
+			try = 1
 		}
 		if err == nil || try == 3 || ctx.Err() != nil || errors.As(err, &bad) {
 			break

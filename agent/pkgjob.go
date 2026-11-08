@@ -297,8 +297,9 @@ func (a *Agent) pkgGet(ctx context.Context, c *http.Client, link string, w *pkgF
 }
 
 // pkgDownload fetches the plan's file to dest and checks its size and
-// sha256. A break resumes where the file ends, five tries in all; a link
-// the server refuses (401, 403, 404, 410) is replaced from a new plan.
+// sha256. A break resumes where the file ends, five tries counted from the
+// last one that brought new data, within the job's deadline; a link the
+// server refuses (401, 403, 404, 410) is replaced from a new plan.
 func (a *Agent) pkgDownload(job string, plan *pkgPlan, dest string) error {
 	c, err := a.pkgClient(plan.URL)
 	if err != nil {
@@ -320,12 +321,17 @@ func (a *Agent) pkgDownload(job string, plan *pkgPlan, dest string) error {
 
 	link, wait := plan.URL, pkgRetryWait
 	for try := 1; w.pos < plan.Size; try++ {
+		from := w.pos
 		code, err := a.pkgGet(ctx, c, link, w)
 		if err == nil {
 			break
 		}
 		if ctx.Err() != nil {
 			return late
+		}
+		// a try that brought new data starts the count again
+		if w.pos > from {
+			try, wait = 1, pkgRetryWait
 		}
 		var fatal pkgFatal
 		if try == pkgTries || errors.As(err, &fatal) {

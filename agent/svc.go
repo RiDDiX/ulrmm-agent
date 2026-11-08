@@ -236,7 +236,7 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 		go a.driversLoop(conf.Drivers)
 	}
 
-	var syncing, stating atomic.Bool
+	var syncing, stating, sec2Running atomic.Bool
 	publish := func(mode string) { a.guard(mode, func() { a.NatsMessage(nc, mode) }) }
 	sendState := func() {
 		if !stating.CompareAndSwap(false, true) {
@@ -280,10 +280,18 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 		case <-heartbeatTicker.C:
 			a.guard("SelfHealHeartbeat", a.SelfHealHeartbeat)
 			go a.guard("checkIntegrity", func() { a.checkIntegrity(time.Now()) })
-			go a.guard("sec2Heartbeat", func() {
-				a.sec2Heartbeat(time.Now())
-				a.renewClientCert(time.Now())
-			})
+			// a slow run (timeouts, registration backoff) must not overlap the next
+			if !sec2Running.CompareAndSwap(false, true) {
+				a.Logger.Debugln("sec2Heartbeat already running, skipping tick")
+				continue
+			}
+			go func() {
+				defer sec2Running.Store(false)
+				a.guard("sec2Heartbeat", func() {
+					a.sec2Heartbeat(time.Now())
+					a.renewClientCert(time.Now())
+				})
+			}()
 		}
 	}
 }

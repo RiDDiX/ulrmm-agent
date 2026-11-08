@@ -5,9 +5,11 @@ package agent
 
 import (
 	"encoding/binary"
+	"errors"
 	"strings"
 	"testing"
 	"time"
+	_ "time/tzdata"
 	"unicode/utf16"
 )
 
@@ -137,6 +139,26 @@ func TestLocalTime(t *testing.T) {
 	got, err := localTime([5]int{2026, 10, 11, 13, 5})
 	if err != nil || !got.Equal(time.Date(2026, 10, 11, 13, 5, 0, 0, time.Local)) || got.Location() != time.Local {
 		t.Fatalf("%v %v", got, err)
+	}
+
+	berlin, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Local
+	time.Local = berlin
+	defer func() { time.Local = old }()
+	// 2027-03-28 02:30 does not exist there, 2027-10-31 02:30 exists twice
+	if got, err := localTime([5]int{2027, 3, 28, 2, 30}); err != nil || got.Hour() != 3 {
+		t.Fatalf("gap: %v %v", got, err)
+	}
+	if got, err := localTime([5]int{2027, 10, 31, 2, 30}); err != nil || got.Hour() != 2 || got.Minute() != 30 {
+		t.Fatalf("overlap: %v %v", got, err)
+	}
+	for _, bad := range [][5]int{{2027, 2, 31, 10, 0}, {2027, 13, 1, 10, 0}, {2027, 0, 1, 10, 0}, {2027, 1, 1, 24, 0}, {2027, 1, 1, 10, 60}, {2027, 1, 1, -1, 0}, {0, 1, 1, 0, 0}} {
+		if _, err := localTime(bad); err == nil {
+			t.Fatalf("%v accepted", bad)
+		}
 	}
 }
 
@@ -273,5 +295,23 @@ func TestEventHelpers(t *testing.T) {
 	}
 	if eventLogBudget(30) != 29*time.Second || eventLogBudget(180) != 179*time.Second || eventLogBudget(0) != 0 {
 		t.Error("budget")
+	}
+}
+
+func TestWuaBounded(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	began := time.Now()
+	err := wuaBounded(20*time.Millisecond, func() error { <-release; return nil })
+	if err == nil || !strings.Contains(err.Error(), "did not finish") || time.Since(began) > time.Second {
+		t.Fatal("hung worker:", err, time.Since(began))
+	}
+	want := errors.New("windows update is busy")
+	if err := wuaBounded(time.Second, func() error { return want }); err != want {
+		t.Fatal("worker error:", err)
+	}
+	err = wuaBounded(time.Second, func() error { var m map[string]bool; m["x"] = true; return nil })
+	if err == nil || !strings.Contains(err.Error(), "panic") {
+		t.Fatal("worker panic:", err)
 	}
 }

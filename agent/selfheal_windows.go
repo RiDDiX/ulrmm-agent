@@ -5,8 +5,6 @@ package agent
 
 import (
 	"fmt"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -93,16 +91,16 @@ func (windowsHeal) removeSchedule() error {
 // and starts it again, so it has to outlive this process.
 func (w windowsHeal) installDownload(path, _ string) error {
 	dir := w.a.WinTmpDir
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// the installer runs as SYSTEM: never from a directory others can write
+	if err := createWinTempDir(); err != nil {
 		return err
 	}
 	installer := filepath.Join(dir, fmt.Sprintf("selfheal-%d.exe", time.Now().Unix()))
 	if err := copyFileAtomic(path, installer, 0o755); err != nil {
 		return err
 	}
-	cmd := exec.Command(installer, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
+	return startDetached(installer, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
 		"/LOG="+filepath.Join(dir, "selfheal-install.log"))
-	return cmd.Start()
 }
 
 // a running exe cannot be replaced on Windows

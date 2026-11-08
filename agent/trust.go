@@ -274,6 +274,14 @@ func (a *Agent) acceptPinDoc(jws string, cs *tls.ConnectionState) (bool, error) 
 		return false, err
 	}
 	a.pins.Store(ps)
+	// another mode keeps them in memory: its write would miss the trust
+	// snapshot and the service would revert it as tampered
+	confTrust.Lock()
+	service := confTrust.service
+	confTrust.Unlock()
+	if !service {
+		return true, nil
+	}
 	if err := savePins(ps); err != nil {
 		a.Logger.Debugln("pins not stored in the config:", err)
 	}

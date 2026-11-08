@@ -186,6 +186,21 @@ func TestParseLidIndexes(t *testing.T) {
 	if _, _, err := parseLidIndexes("nothing"); err == nil {
 		t.Fatal("expected an error")
 	}
+	// German Windows 11, powercfg /qh
+	de := "GUID des Energieschemas: e9a42b02-d5df-448d-aa00-03f14749eb61  (Ultimative Leistung)\r\n" +
+		"  GUID der Untergruppe: 4f971e89-eebd-4455-a8de-9e59040e7347  (Netzschalter und Zuklappen)\r\n" +
+		"    GUID-Alias: SUB_BUTTONS\r\n" +
+		"    GUID der Energieeinstellung: 5ca83367-6e45-459f-a27b-476b1d01c936  (Zuklappen)\r\n" +
+		"      GUID-Alias: LIDACTION\r\n" +
+		"      Index der möglichen Einstellung: 000\r\n" +
+		"      Anzeigename der möglichen Einstellung: Nichts unternehmen\r\n" +
+		"      Index der möglichen Einstellung: 003\r\n" +
+		"      Anzeigename der möglichen Einstellung: Herunterfahren\r\n" +
+		"    Index der aktuellen Wechselstromeinstellung: 0x00000000\r\n" +
+		"    Index der aktuellen Gleichstromeinstellung: 0x00000001\r\n\r\n"
+	if ac, dc, err := parseLidIndexes(de); err != nil || ac != "0x00000000" || dc != "0x00000001" {
+		t.Fatalf("german: %q %q %v", ac, dc, err)
+	}
 }
 
 // expired keepawake.json is removed at start. a live hold needs logind;

@@ -689,13 +689,14 @@ func (a *Agent) rpcAgentUpdate(r *rpcReq) {
 		r.reply("updaterunning")
 		return
 	}
+	// also after a recovered panic; the success path ends in os.Exit
+	defer updateRunning.Store(false)
 	r.reply("ok")
 	p := r.p
 	inno, link, version, sha := p.Data["inno"], p.Data["url"], p.Data["version"], p.updateSha256()
 	refuse := func(why string) {
 		a.Logger.Errorln("AgentUpdate(): refused:", why)
 		a.queueSecurityEvent("update_refused", why)
-		updateRunning.Store(false)
 	}
 	if runtime.GOOS == "windows" && !plainFileName(inno) {
 		refuse("installer name is not a plain file name")
@@ -708,11 +709,9 @@ func (a *Agent) rpcAgentUpdate(r *rpcReq) {
 	}
 	if noop {
 		a.Logger.Infoln("AgentUpdate(): already running", version)
-		updateRunning.Store(false)
 		return
 	}
 	err = a.AgentUpdate(link, inno, version, sha)
-	updateRunning.Store(false)
 	if errors.As(err, new(badDownload)) {
 		refuse(err.Error())
 		return

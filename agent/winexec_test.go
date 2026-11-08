@@ -5,11 +5,13 @@ package agent
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf16"
 )
 
 func TestWinScriptArgv(t *testing.T) {
@@ -62,7 +64,8 @@ func TestCmdShellArgv(t *testing.T) {
 		argv           []string
 		raw            string
 	}{
-		{"cmd", `echo "a b" & dir`, nil, []string{cmdExe}, cmdExe + ` /C echo "a b" & dir`},
+		{"cmd", `echo "a b" & dir`, nil, []string{cmdExe}, cmdExe + ` /S /C "echo "a b" & dir"`},
+		{"cmd", `"C:\Program Files\App\a.exe" --name "x y"`, nil, []string{cmdExe}, cmdExe + ` /S /C ""C:\Program Files\App\a.exe" --name "x y""`},
 		{"cmd", "", []string{"ipconfig", "/all"}, []string{cmdExe, "/C", "ipconfig", "/all"}, ""},
 		{"powershell", "Get-Date; 'x'", nil, []string{psExe, "-NonInteractive", "-NoProfile", "Get-Date; 'x'"}, ""},
 		{"powershell", "", []string{"-File", "x.ps1"}, []string{psExe, "-NonInteractive", "-NoProfile", "-File", "x.ps1"}, ""},
@@ -73,7 +76,7 @@ func TestCmdShellArgv(t *testing.T) {
 			t.Errorf("%s %q: %q %q %v", c.shell, c.command, argv, raw, err)
 		}
 	}
-	if _, raw, _ := cmdShellArgv("cmd", nil, "x", `C:\a b\cmd.exe`, psExe); raw != `"C:\a b\cmd.exe" /C x` {
+	if _, raw, _ := cmdShellArgv("cmd", nil, "x", `C:\a b\cmd.exe`, psExe); raw != `"C:\a b\cmd.exe" /S /C "x"` {
 		t.Errorf("quoted exe: %q", raw)
 	}
 	for _, sh := range []string{"", "bash", `C:\custom.exe`} {
@@ -202,5 +205,74 @@ func TestWinTermRegistry(t *testing.T) {
 	}
 	if _, ok := takePendingSize(pending, "s"); ok {
 		t.Error("pending size handed out twice")
+	}
+}
+
+func TestScriptText(t *testing.T) {
+	const bom = "\uFEFF"
+	for _, c := range []struct{ shell, code, want string }{
+		{"powershell", "Write-Output 'Grüße'", bom + "Write-Output 'Grüße'"},
+		{"powershell", bom + "x", bom + "x"},
+		{"cmd", "@echo off", "@echo off"},
+		{"python", "print(1)", "print(1)"},
+		{"nushell", "ls", "ls"},
+		{"deno", "1", "1"},
+	} {
+		if got := scriptText(c.shell, c.code); got != c.want {
+			t.Errorf("%s %q: %q", c.shell, c.code, got)
+		}
+	}
+}
+
+// appExecLink builds REPARSE_DATA_BUFFER bytes as FSCTL_GET_REPARSE_POINT returns them.
+func appExecLink(tag uint32, strs ...string) []byte {
+	data := binary.LittleEndian.AppendUint32(nil, 3)
+	for _, s := range strs {
+		for _, c := range utf16.Encode([]rune(s)) {
+			data = binary.LittleEndian.AppendUint16(data, c)
+		}
+		data = append(data, 0, 0)
+	}
+	b := binary.LittleEndian.AppendUint32(nil, tag)
+	b = binary.LittleEndian.AppendUint16(b, uint16(len(data)))
+	return append(append(b, 0, 0), data...)
+}
+
+func TestWingetAliasTarget(t *testing.T) {
+	const apps = `C:\Program Files\WindowsApps`
+	const pkg, aumid = "Microsoft.DesktopAppInstaller_8wekyb3d8bbwe", "Microsoft.DesktopAppInstaller_8wekyb3d8bbwe!winget"
+	good := apps + `\Microsoft.DesktopAppInstaller_1.27.350.0_x64__8wekyb3d8bbwe\winget.exe`
+	ok := appExecLink(0x8000001B, pkg, aumid, good, "0")
+	if got, valid := appExecLinkTarget(ok); !valid || got != good || !inAppInstaller(got, apps) {
+		t.Fatalf("good alias: %q %v", got, valid)
+	}
+	if got, valid := appExecLinkTarget(appExecLink(0x8000001B, pkg, aumid, `C:\Users\bob\AppData\Local\evil.exe`)); !valid || inAppInstaller(got, apps) {
+		t.Errorf("foreign target trusted: %q %v", got, valid)
+	}
+	for name, b := range map[string][]byte{
+		"truncated":    ok[:len(ok)-6],
+		"no target":    appExecLink(0x8000001B, pkg, aumid),
+		"symlink tag":  appExecLink(0xA000000C, pkg, aumid, good),
+		"short":        ok[:10],
+		"length cut":   append(append([]byte{}, ok[:4]...), 2, 0, 0, 0),
+		"empty target": appExecLink(0x8000001B, pkg, aumid, ""),
+	} {
+		if got, valid := appExecLinkTarget(b); valid {
+			t.Errorf("%s: %q accepted", name, got)
+		}
+	}
+	for target, want := range map[string]bool{
+		strings.ToLower(good): true,
+		apps + `\Microsoft.DesktopAppInstaller_1_x64__8wekyb3d8bbwe\..\..\..\Users\bob\winget.exe`: false,
+		apps + `\Microsoft.DesktopAppInstaller_evil.exe`:                                           false,
+		apps + `\Evil.App_1.0_x64__abc\winget.exe`:                                                 false,
+		`C:\Users\bob\Microsoft.DesktopAppInstaller_1\winget.exe`:                                  false,
+	} {
+		if got := inAppInstaller(target, apps); got != want {
+			t.Errorf("%q: %v", target, got)
+		}
+	}
+	if inAppInstaller(good, "") {
+		t.Error("trusted without a WindowsApps folder")
 	}
 }

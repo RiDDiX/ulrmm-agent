@@ -5,14 +5,27 @@ package agent
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf16"
 )
 
 // Argument building and checks with no Windows API, so the Linux test run covers them.
+
+// scriptText is the file content RunScript writes. Windows PowerShell 5.1
+// reads a .ps1 without BOM in the ANSI code page; cmd would run a BOM as
+// part of the first line.
+func scriptText(shell, code string) string {
+	if shell == "powershell" && !strings.HasPrefix(code, "\uFEFF") {
+		return "\uFEFF" + code
+	}
+	return code
+}
 
 // scriptExt is the file extension Windows needs to run a script of shell.
 func scriptExt(shell string) string {
@@ -75,7 +88,9 @@ func cmdShellArgv(shell string, args []string, command, cmdExe, psExe string) (a
 		if len(args) > 0 && command == "" {
 			return append([]string{cmdExe, "/C"}, args...), "", nil
 		}
-		return []string{cmdExe}, quoteCmdArg(cmdExe) + " /C " + command, nil
+		// /S: cmd drops exactly the outer quotes added here, so a quoted
+		// program with quoted arguments stays intact
+		return []string{cmdExe}, quoteCmdArg(cmdExe) + ` /S /C "` + command + `"`, nil
 	case "powershell":
 		if len(args) > 0 && command == "" {
 			return append([]string{psExe, "-NonInteractive", "-NoProfile"}, args...), "", nil
@@ -239,4 +254,40 @@ func scriptReply(stdout, stderr string, code int, timedOut bool, err error, time
 		return "", CleanString(err.Error()), scriptStartExit, err
 	}
 	return stdout, stderr, code, nil
+}
+
+// appExecLinkTarget is the exe an App Execution Alias starts, from its
+// reparse data: tag IO_REPARSE_TAG_APPEXECLINK, data length, reserved, then
+// a version and the NUL-terminated UTF-16 strings package id, app user
+// model id and target path.
+func appExecLinkTarget(b []byte) (string, bool) {
+	const tagAppExecLink = 0x8000001B
+	if len(b) < 12 || binary.LittleEndian.Uint32(b) != tagAppExecLink {
+		return "", false
+	}
+	end := 8 + int(binary.LittleEndian.Uint16(b[4:]))
+	if end < 12 || end > len(b) {
+		return "", false
+	}
+	u := make([]uint16, (end-12)/2)
+	for i := range u {
+		u[i] = binary.LittleEndian.Uint16(b[12+2*i:])
+	}
+	// a fourth part means the target's NUL was there
+	parts := strings.SplitN(string(utf16.Decode(u)), "\x00", 4)
+	if len(parts) < 4 || parts[2] == "" {
+		return "", false
+	}
+	return parts[2], true
+}
+
+// inAppInstaller: target lies in an App Installer package folder under
+// windowsApps (%ProgramW6432%\WindowsApps), which users cannot write.
+func inAppInstaller(target, windowsApps string) bool {
+	if windowsApps == "" || strings.Contains(target, "..") {
+		return false
+	}
+	prefix := strings.TrimRight(filepath.Clean(windowsApps), `\`) + `\Microsoft.DesktopAppInstaller_`
+	t := filepath.Clean(target)
+	return len(t) > len(prefix) && strings.EqualFold(t[:len(prefix)], prefix) && strings.Contains(t[len(prefix):], `\`)
 }

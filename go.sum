@@ -59,8 +59,6 @@ github.com/golang/protobuf v1.4.0-rc.2/go.mod h1:LlEzMj4AhA7rCAGe4KMBDvJI+AwstrU
 github.com/golang/protobuf v1.4.0-rc.4.0.20200313231945-b860323f09d0/go.mod h1:WU3c8KckQ9AFe+yFwt9sWVRKCVIyN9cPHBJSNnbL67w=
 github.com/golang/protobuf v1.4.0/go.mod h1:jodUvKwWbYaEsadDk5Fwe5c77LiNKVO9IDvqG2KuDX0=
 github.com/golang/protobuf v1.4.2/go.mod h1:oDoupMAO8OvCJWAcko0GGGIgR6R6ocIYbsSw735rRwI=
-github.com/gonutz/w32/v2 v2.11.1 h1:plG738ZY7VIkPGf3adZ6lFeAf2evCKrULKyZT5GrPoc=
-github.com/gonutz/w32/v2 v2.11.1/go.mod h1:MgtHx0AScDVNKyB+kjyPder4xIi3XAcHS6LDDU2DmdE=
 github.com/google/aukera v0.0.0-20201117230544-d145c8357fea/go.mod h1:oXqTZORBzdwQ6L32YjJmaPajqIV/hoGEouwpFMf4cJE=
 github.com/google/cabbie v1.0.2/go.mod h1:6MmHaUrgfabehCHAIaxdrbmvHSxUVXj3Abs08FMABSo=
 github.com/google/glazier v0.0.0-20210617205946-bf91b619f5d4/go.mod h1:g7oyIhindbeebnBh0hbFua5rv6XUt/nweDwIWdvxirg=

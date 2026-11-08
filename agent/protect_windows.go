@@ -45,7 +45,13 @@ func legacyWrap(b []byte) (string, error) {
 func unprotectDPAPI(b []byte) ([]byte, error) {
 	var out windows.DataBlob
 	if err := windows.CryptUnprotectData(blob(b), nil, blob(dpapiEntropy), 0, nil, windows.CRYPTPROTECT_UI_FORBIDDEN, &out); err != nil {
-		return nil, errUnwrap
+		// broken data or a key of another machine or reset: unreadable for
+		// good; anything else (LSA busy, low memory) may pass
+		switch err {
+		case windows.ERROR_INVALID_DATA, windows.Errno(windows.NTE_BAD_DATA), windows.Errno(windows.NTE_BAD_KEY_STATE), windows.Errno(windows.CRYPT_E_BAD_ENCODE):
+			return nil, errUnwrap
+		}
+		return nil, err
 	}
 	return blobBytes(&out), nil
 }

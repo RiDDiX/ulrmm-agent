@@ -101,6 +101,7 @@ func (a *Agent) onPowerNotice(nc *nats.Conn, key string, state uint64, stateOK b
 		if kind == "wake" {
 			a.powerBack(nc)
 		} else {
+			a.SelfHealHeartbeat()
 			powerResumed()
 		}
 		return

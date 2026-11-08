@@ -16,10 +16,13 @@ var (
 	modadvapi32 = windows.NewLazySystemDLL("advapi32.dll")
 	modpowrprof = windows.NewLazySystemDLL("powrprof.dll")
 	modwtsapi32 = windows.NewLazySystemDLL("wtsapi32.dll")
+	moduser32   = windows.NewLazySystemDLL("user32.dll")
 
 	procAdjustTokenPrivileges      = modadvapi32.NewProc("AdjustTokenPrivileges")
 	procSetSuspendState            = modpowrprof.NewProc("SetSuspendState")
 	procWTSQuerySessionInformation = modwtsapi32.NewProc("WTSQuerySessionInformationW")
+	procGetConsoleWindow           = modkernel32.NewProc("GetConsoleWindow")
+	procShowWindow                 = moduser32.NewProc("ShowWindow")
 )
 
 const wtsUserName = 5 // WTS_INFO_CLASS WTSUserName
@@ -115,4 +118,20 @@ func enablePrivilege(name string) error {
 		return fmt.Errorf("%s: %w", name, e)
 	}
 	return nil
+}
+
+func getConsoleWindow() windows.HWND {
+	r, _, _ := procGetConsoleWindow.Call()
+	return windows.HWND(r)
+}
+
+func showWindow(hwnd windows.HWND, cmd int32) {
+	procShowWindow.Call(uintptr(hwnd), uintptr(cmd))
+}
+
+// messageBox shows text; it ignores the answer like the callers do.
+func messageBox(text, caption string, flags uint32) {
+	t, _ := windows.UTF16PtrFromString(text)
+	c, _ := windows.UTF16PtrFromString(caption)
+	_, _ = windows.MessageBox(0, t, c, flags)
 }

@@ -358,6 +358,12 @@ func TestCredentialAnswerHints(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	// the refresh stores the new tokens under credMu; the temp dir must
+	// not go away before that write
+	for !a.sec2.credMu.TryLock() {
+		time.Sleep(time.Millisecond)
+	}
+	a.sec2.credMu.Unlock()
 }
 
 // rotate_pending "identity": new keys signed by the old identity; the new

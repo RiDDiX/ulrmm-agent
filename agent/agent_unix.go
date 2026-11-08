@@ -77,7 +77,7 @@ func (a *Agent) GetDisks() []rmm.DiskUsage {
 		a.Logger.Debugln("GetDisks():", err)
 		return []rmm.DiskUsage{}
 	}
-	return a.diskList(parts, disk.Usage)
+	return a.diskList(parts, func(p string) (*disk.UsageStat, error) { return statBounded(p, statfsWait) })
 }
 
 func (a *Agent) diskList(parts []disk.PartitionStat, usage func(string) (*disk.UsageStat, error)) []rmm.DiskUsage {
@@ -144,26 +144,34 @@ func (a *Agent) SystemRebootRequired() (bool, error) {
 
 // First user with a login session, "None" when there is none (as on Windows).
 func (a *Agent) LoggedOnUser() string {
-	if u := firstLoginUser(); u != "" {
+	if u := firstLoginUser(false); u != "" {
 		return u
 	}
 	return noUser
 }
 
-func firstLoginUser() string {
+// firstLoginUser: with noRoot, root's sessions (su, ssh) are passed over.
+func firstLoginUser(noRoot bool) string {
 	users, err := host.Users()
 	if err != nil {
 		return ""
 	}
+	return pickLoginUser(users, noRoot)
+}
+
+func pickLoginUser(users []host.UserStat, noRoot bool) string {
 	for _, u := range users {
-		if u.User != "" {
+		if u.User != "" && !(noRoot && u.User == "root") {
 			return u.User
 		}
 	}
 	return ""
 }
 
-var errNobodyLoggedIn = errors.New("run as user: nobody is logged in on this computer")
+var (
+	errNobodyLoggedIn = errors.New("run as user: nobody is logged in on this computer")
+	errRunAsRoot      = errors.New("run as user: the logged in user is root")
+)
 
 // run_as_user: the console user (macOS: owner of /dev/console, Linux: the
 // active session of seat0), else the first user with a login session (FreeBSD).
@@ -184,7 +192,7 @@ func sessionUser() string {
 			}
 		}
 	}
-	return firstLoginUser()
+	return firstLoginUser(true)
 }
 
 func sessionRunAs() (*runAs, error) {
@@ -204,6 +212,10 @@ func lookupRunAs(name string) (*runAs, error) {
 	gid, err2 := strconv.ParseUint(u.Gid, 10, 32)
 	if err1 != nil || err2 != nil {
 		return nil, fmt.Errorf("run as user: no numeric ids for %s", name)
+	}
+	// run as user must never mean root (a root console session, toor)
+	if uid == 0 {
+		return nil, errRunAsRoot
 	}
 	r := &runAs{name: u.Username, uid: uint32(uid), gid: uint32(gid), home: u.HomeDir}
 	if ids, err := u.GroupIds(); err == nil {

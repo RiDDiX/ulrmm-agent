@@ -97,14 +97,15 @@ func validTaskName(name string) bool {
 	return true
 }
 
-// localTime builds the y/m/d/h/min fields at second 0 in local time and
-// refuses values time.Date would silently roll over.
+// localTime builds the y/m/d/h/min fields at second 0 in local time. It
+// refuses out-of-range fields and dates time.Date would roll over; a time
+// in the spring-forward gap is taken as time.Local normalizes it.
 func localTime(f [5]int) (time.Time, error) {
-	t := time.Date(f[0], time.Month(f[1]), f[2], f[3], f[4], 0, 0, time.Local)
-	if f[0] < 1 || t.Year() != f[0] || int(t.Month()) != f[1] || t.Day() != f[2] || t.Hour() != f[3] || t.Minute() != f[4] {
+	d := time.Date(f[0], time.Month(f[1]), f[2], 0, 0, 0, 0, time.UTC)
+	if f[0] < 1 || d.Year() != f[0] || int(d.Month()) != f[1] || d.Day() != f[2] || f[3] < 0 || f[3] > 23 || f[4] < 0 || f[4] > 59 {
 		return time.Time{}, fmt.Errorf("invalid date %04d-%02d-%02d %02d:%02d", f[0], f[1], f[2], f[3], f[4])
 	}
-	return t, nil
+	return time.Date(f[0], time.Month(f[1]), f[2], f[3], f[4], 0, 0, time.Local), nil
 }
 
 func (p taskPlan) check() error {
@@ -308,4 +309,27 @@ func eventLogBudget(timeout int) time.Duration {
 		return 0
 	}
 	return time.Duration(timeout-1) * time.Second
+}
+
+// wuaBounded runs f, which opens and closes its own session, in a worker and
+// gives up after d. An abandoned worker keeps the session until COM returns.
+// The worker is outside the RPC recover, so a panic comes back as an error.
+func wuaBounded(d time.Duration, f func() error) error {
+	ch := make(chan error, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				ch <- fmt.Errorf("windows update panic: %v", r)
+			}
+		}()
+		ch <- f()
+	}()
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case err := <-ch:
+		return err
+	case <-t.C:
+		return fmt.Errorf("windows update did not finish within %v", d)
+	}
 }

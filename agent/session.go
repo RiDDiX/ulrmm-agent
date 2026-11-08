@@ -178,7 +178,6 @@ func (l *nonceLRU) add(n [16]byte, now time.Time) {
 type hs1Body struct {
 	Sid    []byte   `codec:"sid"`
 	Es     []byte   `codec:"es"`
-	Ts     int64    `codec:"ts"`
 	Rotate []string `codec:"rotate"`
 }
 

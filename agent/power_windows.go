@@ -46,16 +46,17 @@ var awakeStateDir = func() string {
 func powercfg(args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	return runOut(ctx, "powercfg", args...)
+	return runOut(ctx, powercfgExe(), args...)
 }
 
 // The power request blocks idle sleep. Lid close is LIDACTION in the scheme:
 // AC and DC are 0 (do nothing) during the hold, saved indexes restored after.
 var holdLid = func(st *awakeState) error {
 	if st.LidAC == "" || st.LidDC == "" {
-		out, err := powercfg("/q", "SCHEME_CURRENT", "SUB_BUTTONS", "LIDACTION")
+		// /q leaves LIDACTION out where Windows sees no lid (desktops, VMs)
+		out, err := powercfg("/qh", "SCHEME_CURRENT", "SUB_BUTTONS", "LIDACTION")
 		if err != nil {
-			return errors.New("powercfg /q: " + err.Error())
+			return errors.New("powercfg /qh: " + err.Error())
 		}
 		if st.LidAC, st.LidDC, err = parseLidIndexes(out); err != nil {
 			return err

@@ -676,7 +676,7 @@ func (a *Agent) CleanupAgentUpdates() {
 		if dir == "" {
 			continue
 		}
-		for _, pattern := range []string{IdentArtifact + "-v*", "is-*.tmp"} {
+		for _, pattern := range []string{IdentArtifact + "-v*", "is-*.tmp", "selfheal-*.exe"} {
 			matches, err := filepath.Glob(filepath.Join(dir, pattern))
 			if err != nil {
 				continue

@@ -20,8 +20,11 @@
 package agent // WUA over COM
 
 import (
+	"errors"
 	"fmt"
+	"runtime"
 	"sync"
+	"time"
 
 	rmm "git.riddix.de/RiDDiX/ulrmm-agent/shared"
 	ole "github.com/go-ole/go-ole"
@@ -33,7 +36,14 @@ const (
 	S_FALSE = 1
 )
 
+// held for a whole scan or install; a hung WUA call keeps it, so later
+// callers get errWUABusy after wuaLockWait instead of waiting forever
 var wuaSession sync.Mutex
+
+// a scan or install that is still running normally ends within this
+var wuaLockWait = 10 * time.Minute
+
+var errWUABusy = errors.New("windows update is busy")
 
 // IUpdateSession is a an IUpdateSession.
 type IUpdateSession struct {
@@ -46,16 +56,25 @@ func (s *IUpdateSession) Close() {
 	}
 	ole.CoUninitialize()
 	wuaSession.Unlock()
+	runtime.UnlockOSThread()
 }
 
+// COM is set up per OS thread: the goroutine that opens the session must
+// also close it.
 func NewUpdateSession() (*IUpdateSession, error) {
-	wuaSession.Lock()
+	for deadline := time.Now().Add(wuaLockWait); !wuaSession.TryLock(); time.Sleep(time.Second) {
+		if time.Now().After(deadline) {
+			return nil, errWUABusy
+		}
+	}
+	runtime.LockOSThread()
 	if err := ole.CoInitializeEx(0, ole.COINIT_MULTITHREADED); err != nil {
 		e, ok := err.(*ole.OleError)
 		// S_OK and S_FALSE are both are Success codes.
 		// https://docs.microsoft.com/en-us/windows/win32/learnwin32/error-handling-in-com
 		if !ok || (e.Code() != S_OK && e.Code() != S_FALSE) {
 			wuaSession.Unlock()
+			runtime.UnlockOSThread()
 			return nil, fmt.Errorf(`ole.CoInitializeEx(0, ole.COINIT_MULTITHREADED): %v`, err)
 		}
 	}

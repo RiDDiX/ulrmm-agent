@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	rmm "git.riddix.de/RiDDiX/ulrmm-agent/shared"
-	"github.com/StackExchange/wmi"
 	gnet "github.com/shirou/gopsutil/v3/net"
 )
 
@@ -19,8 +18,8 @@ func osSystem(ctx context.Context, e *errs) *SSystem {
 }
 
 func osIfaces(ctx context.Context, e *errs) []SIface {
-	var ads []winAdapter
-	if err := wmi.QueryNamespace("SELECT Name, Speed, FullDuplex, MediaConnectState, PermanentAddress, NdisPhysicalMedium, MtuSize FROM MSFT_NetAdapter", &ads, nsStdCimv2); err != nil {
+	ads, err := wmiNS[winAdapter]("SELECT Name, Speed, FullDuplex, MediaConnectState, PermanentAddress, NdisPhysicalMedium, MtuSize FROM MSFT_NetAdapter", nsStdCimv2)
+	if err != nil {
 		e.add("MSFT_NetAdapter: %v", err)
 		return psIfaces(ctx, func(i gnet.InterfaceStat) bool {
 			return len(strings.Split(i.HardwareAddr, ":")) == 6

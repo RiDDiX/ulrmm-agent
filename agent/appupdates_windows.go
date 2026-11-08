@@ -65,8 +65,7 @@ func runWingetAsUser(ctx context.Context, pkgExe string, args ...string) (stdout
 	if home, err := tok.Token().GetUserProfileDirectory(); err == nil {
 		dir = home
 		alias := filepath.Join(home, "AppData", "Local", "Microsoft", "WindowsApps", "winget.exe")
-		// Lstat: the alias is a reparse point Stat cannot follow
-		if _, err := os.Lstat(alias); err == nil {
+		if wingetAlias(alias, filepath.Dir(filepath.Dir(pkgExe))) {
 			exe = alias
 		}
 	}
@@ -79,6 +78,34 @@ func runWingetAsUser(ctx context.Context, pkgExe string, args ...string) (stdout
 		err = fmt.Errorf("winget as user: %v", err)
 	}
 	return stdout, stderr, code, err
+}
+
+// wingetAlias: path is an App Execution Alias that starts an exe of the App
+// Installer package. The folder is the user's own, so anything else there
+// could be planted and would run with the elevated token.
+func wingetAlias(path, windowsApps string) bool {
+	// Lstat: the alias is a reparse point Stat cannot follow
+	fi, err := os.Lstat(path)
+	if err != nil || fi.Mode().IsRegular() || fi.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return false
+	}
+	h, err := windows.CreateFile(p, 0, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil,
+		windows.OPEN_EXISTING, windows.FILE_FLAG_OPEN_REPARSE_POINT|windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	if err != nil {
+		return false
+	}
+	defer windows.CloseHandle(h)
+	buf := make([]byte, windows.MAXIMUM_REPARSE_DATA_BUFFER_SIZE)
+	var n uint32
+	if windows.DeviceIoControl(h, windows.FSCTL_GET_REPARSE_POINT, nil, 0, &buf[0], uint32(len(buf)), &n, nil) != nil {
+		return false
+	}
+	target, ok := appExecLinkTarget(buf[:n])
+	return ok && inAppInstaller(target, windowsApps)
 }
 
 func listAppUpdates(ctx context.Context) ([]AppUpdate, error) {

@@ -16,6 +16,15 @@ import (
 
 const wmiClassTimeout = 60 * time.Second
 
+// wmiNS runs one query in namespace ns with the class timeout.
+func wmiNS[T any](query, ns string) ([]T, error) {
+	return wmiBounded(wmiClassTimeout, func() ([]T, error) {
+		var dst []T
+		err := wmi.QueryNamespace(query, &dst, ns)
+		return dst, err
+	})
+}
+
 // wmiFixed selects the properties of T by name; the struct name is the
 // class. Properties listed in wmiReadAs are read in WMI's own type and
 // converted back. Any other type mismatch keeps the rows; the library stops

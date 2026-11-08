@@ -781,7 +781,7 @@ func TestLoadIdentity(t *testing.T) {
 	if again := b.loadIdentity(); again == nil || again.kid != id.kid || !b.registered() {
 		t.Fatal("the stored seed is not used")
 	}
-	_ = setConfValues(map[string]string{confIdentityKey: "dpapi1:AAAA"})
+	_ = setConfValues(map[string]string{confIdentityKey: wrapRaw + "AAAA"})
 	c := &Agent{Logger: a.Logger}
 	if n := c.loadIdentity(); n == nil || n.kid == id.kid || c.registered() || len(c.events) != 1 || c.events[0].Kind != "identity_unreadable" {
 		t.Fatalf("unreadable seed: %+v", c.events)

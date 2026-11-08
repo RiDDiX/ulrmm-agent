@@ -176,19 +176,31 @@ func (a *Agent) RunScript(code, shell string, args []string, timeout int, runAsU
 	if err := createWinTempDir(); err != nil {
 		return setupFail(err)
 	}
-	dir := a.WinTmpDir
+	var tok *wintoken.Token
 	if runAsUser {
-		dir = a.WinRunAsUserTmpDir
+		var err error
+		if tok, err = getUserToken(); err != nil {
+			return "", "run as user: no logged in user: " + err.Error(), scriptSetupExit, nil
+		}
+		defer tok.Close()
 	}
-	f, err := os.CreateTemp(dir, "ulrmm*"+scriptExt(shell))
+	f, err := os.CreateTemp(a.WinTmpDir, "ulrmm*"+scriptExt(shell))
 	if err != nil {
 		return setupFail(err)
 	}
 	script := f.Name()
-	defer os.Remove(script)
-	_, err = f.WriteString(code)
+	defer func() { os.Remove(script) }()
+	_, err = f.WriteString(scriptText(shell, code))
 	if cerr := f.Close(); err == nil {
 		err = cerr
+	}
+	if err == nil && tok != nil {
+		// written in the admins-only directory and moved with its own DACL,
+		// so other users of the run-as-user directory never get to read it
+		var dst string
+		if dst, err = userScript(script, a.WinRunAsUserTmpDir, tok.Token()); err == nil {
+			script = dst
+		}
 	}
 	if err != nil {
 		return setupFail(err)
@@ -214,12 +226,7 @@ func (a *Agent) RunScript(code, shell string, args []string, timeout int, runAsU
 	ctx, cancel := secondsCtx(timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	if runAsUser {
-		tok, err := getUserToken()
-		if err != nil {
-			return "", "run as user: no logged in user: " + err.Error(), scriptSetupExit, nil
-		}
-		defer tok.Close()
+	if tok != nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{Token: syscall.Token(tok.Token()), HideWindow: true}
 		if len(env) > 0 {
 			base, err := tok.Token().Environ(false)
@@ -239,4 +246,19 @@ func (a *Agent) RunScript(code, shell string, args []string, timeout int, runAsU
 		a.Logger.Debugln("RunScript():", err)
 	}
 	return scriptReply(CleanString(out.String()), CleanString(errOut.String()), exitcode, timedOut, err, timeout)
+}
+
+// userScript gives the script at path SYSTEM and Administrators full access
+// and the token's user read and execute, nothing inherited, then moves it
+// into dir. A move on the same volume keeps that DACL.
+func userScript(path, dir string, tok windows.Token) (string, error) {
+	u, err := tok.GetTokenUser()
+	if err != nil {
+		return "", err
+	}
+	if err := setPathSecurity(path, "O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1200a9;;;"+u.User.Sid.String()+")"); err != nil {
+		return "", err
+	}
+	dst := filepath.Join(dir, filepath.Base(path))
+	return dst, os.Rename(path, dst)
 }

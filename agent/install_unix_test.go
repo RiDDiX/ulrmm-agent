@@ -210,7 +210,8 @@ func TestRenewClientCert(t *testing.T) {
 	}
 }
 
-// A newer pin document goes into the config; the next process starts with it.
+// A newer pin document goes into the config of the service; the next
+// process starts with it.
 func TestPinsStoredInConfig(t *testing.T) {
 	key := testEnrollKey(t)
 	old := etcConfig
@@ -222,6 +223,26 @@ func TestPinsStoredInConfig(t *testing.T) {
 	leaf := testLeaf(t, nil, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
 	pin := spkiPin(leaf.Certificate[0])
 	cs := &tls.ConnectionState{PeerCertificates: parsed(t, leaf.Certificate[0])}
+	setService := func(on bool) {
+		confTrust.Lock()
+		confTrust.service = on
+		confTrust.Unlock()
+	}
+	confTrust.Lock()
+	was := confTrust.service
+	confTrust.Unlock()
+	t.Cleanup(func() { setService(was) })
+	// another mode takes the document in memory only: only the service
+	// writes the pins together with the trust snapshot
+	setService(false)
+	if ok, err := a.acceptPinDoc(pinDoc(key, "https://127.0.0.1", 7, pin), cs); !ok || err != nil || a.pins.Load().Seq != 7 {
+		t.Fatalf("accept: %v %v", ok, err)
+	}
+	if v, _ := confValue(confPins); v != "" {
+		t.Fatal("stored outside the service:", v)
+	}
+	a.pins.Store(nil)
+	setService(true)
 	if ok, err := a.acceptPinDoc(pinDoc(key, "https://127.0.0.1", 7, pin), cs); !ok || err != nil {
 		t.Fatalf("accept: %v %v", ok, err)
 	}

@@ -224,6 +224,11 @@ func (l *lineCollector) Write(p []byte) (int, error) {
 		i := bytes.IndexByte(p, '\n')
 		if i < 0 {
 			l.partial = append(l.partial, p...)
+			// output that never ends a line (head -c of /dev/zero) is kept in pieces
+			if len(l.partial) >= cmdKeepTail {
+				l.addLine(string(l.partial))
+				l.partial = l.partial[:0]
+			}
 			return n, nil
 		}
 		l.partial = append(l.partial, p[:i]...)
