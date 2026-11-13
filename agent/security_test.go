@@ -8,7 +8,6 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
-	"debug/elf"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -116,6 +115,17 @@ func TestAgentUpdateRefusedIsReported(t *testing.T) {
 	}
 }
 
+// A copy of the test binary run with -version is the stand-in for a
+// downloaded agent of another version: a host binary such as /bin/echo
+// stops working under another name on multi-call systems.
+func TestMain(m *testing.M) {
+	if len(os.Args) == 2 && os.Args[1] == "-version" {
+		fmt.Println("-version")
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
 // A download that is not the file the server signed is refused and
 // reported, one that fails on the way is only logged.
 func TestAgentUpdateBadDownloadReported(t *testing.T) {
@@ -123,28 +133,14 @@ func TestAgentUpdateBadDownloadReported(t *testing.T) {
 		t.Skip("the update runs the downloaded ELF")
 	}
 	key := testEnrollKey(t)
-	// a program that runs but does not answer -version with 2.26.10.2026
-	body, err := os.ReadFile("/bin/echo")
-	if err != nil {
-		t.Skip(err)
-	}
-	// the update refuses a binary for another GOARCH, as in a 386 run on an amd64 host
-	echo, err := elf.Open("/bin/echo")
-	if err != nil {
-		t.Skip(err)
-	}
-	defer echo.Close()
+	// the test binary itself answers -version with -version, see TestMain
 	self, err := os.Executable()
 	if err != nil {
-		t.Skip(err)
+		t.Fatal(err)
 	}
-	selfELF, err := elf.Open(self)
+	body, err := os.ReadFile(self)
 	if err != nil {
-		t.Skip(err)
-	}
-	defer selfELF.Close()
-	if echo.Machine != selfELF.Machine {
-		t.Skip("/bin/echo is not a " + runtime.GOARCH + " binary")
+		t.Fatal(err)
 	}
 	sum := sha256.Sum256(body)
 	sha := hex.EncodeToString(sum[:])
