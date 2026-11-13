@@ -30,13 +30,15 @@ const (
 	integrityPath        = "/api/v3/integrity/"
 	integrityMax         = 1 << 20
 	integrityEvery       = 6 * time.Hour
+	integrityRetry       = 10 * time.Minute
 	integrityRepairEvery = 24 * time.Hour
 	integrityStampFile   = "integrity-repair"
 )
 
 var integrityState struct {
 	sync.Mutex
-	at time.Time
+	next time.Time // no fetch before this
+	busy bool      // a fetch is running
 }
 
 // verifyIntegrityDoc checks the manifest like a pin document and returns
@@ -75,14 +77,14 @@ func (a *Agent) checkIntegrity(now time.Time) {
 		return
 	}
 	integrityState.Lock()
-	if !integrityState.at.IsZero() && now.Sub(integrityState.at) < integrityEvery {
+	if integrityState.busy || now.Before(integrityState.next) {
 		integrityState.Unlock()
 		return
 	}
-	integrityState.at = now
+	integrityState.busy = true
 	integrityState.Unlock()
 
-	jws, err := a.getIntegrityDoc()
+	jws, err := a.fetchIntegrity(now)
 	if err != nil {
 		a.Logger.Debugln("checkIntegrity():", err)
 		return
@@ -151,6 +153,28 @@ func (a *Agent) integrity(h *healer, jws, exe string, now time.Time) {
 	if act, ok := h.repairBinary(healManifest{Version: a.Version, MainPath: exe, SHA256: want}, cur, nil); ok && h.report != nil {
 		h.report([]string{"agent binary did not match the RMM build: " + act})
 	}
+}
+
+var integrityFetch = (*Agent).getIntegrityDoc
+
+// fetchIntegrity fetches the manifest and schedules the next fetch. A panic
+// in the fetch (recovered by the caller) counts as a failed fetch, so the
+// check is not switched off until the service restarts.
+func (a *Agent) fetchIntegrity(now time.Time) (jws string, err error) {
+	err = errors.New("integrity manifest: the fetch panicked")
+	defer func() {
+		integrityState.Lock()
+		integrityState.busy = false
+		// a fetch that fails at boot (network not up yet) must not cost the
+		// whole interval
+		if err != nil {
+			integrityState.next = now.Add(integrityRetry)
+		} else {
+			integrityState.next = now.Add(integrityEvery)
+		}
+		integrityState.Unlock()
+	}()
+	return integrityFetch(a)
 }
 
 func (a *Agent) getIntegrityDoc() (string, error) {

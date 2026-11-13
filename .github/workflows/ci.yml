@@ -20,6 +20,15 @@ jobs:
         with:
           go-version: "1.27.3"
 
+      - name: gofmt
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then
+            echo "not gofmt-formatted:"
+            echo "$out"
+            exit 1
+          fi
+
       - name: Build all targets
         env:
           CGO_ENABLED: "0"

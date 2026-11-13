@@ -295,8 +295,20 @@ func protectedPID(pid int32) bool {
 }
 
 // Errors ignored.
-func killTree(pid int32) {
-	for _, c := range descendants(pid, listProcs(false)) {
+func killTree(pid int32) { killPIDs(descendants(pid, listProcs(false))) }
+
+// killGroupAndTree kills the process group pid leads and every descendant of
+// pid, also one that left the group. The tree is read before the kill: once
+// its parent is dead such a child is reparented and no walk from pid finds
+// it. A process that was reparented before (double fork) is out of reach.
+func killGroupAndTree(pid int) {
+	tree := descendants(int32(pid), listProcs(false))
+	killProcGroup(pid)
+	killPIDs(tree)
+}
+
+func killPIDs(pids []int32) {
+	for _, c := range pids {
 		if protectedPID(c) {
 			continue
 		}

@@ -22,7 +22,6 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -492,12 +491,32 @@ func TestTerminalKillEndsTheSessionGroup(t *testing.T) {
 	a.KillTerminalSession("k")
 	<-waited
 	for i := 0; i < 50; i++ {
-		if syscall.Kill(pid, 0) != nil {
+		if !alive(pid) {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("background process %d of the shell survived the kill", pid)
+}
+
+// An exited child nobody has waited for yet is a zombie: dead to alive().
+func TestAliveCountsZombieDead(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(self, "-exit", "0")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer cmd.Wait()
+	for i := 0; i < 250; i++ {
+		if !alive(cmd.Process.Pid) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("an exited, unreaped child counts as alive")
 }
 
 func TestTerminalLimits(t *testing.T) {

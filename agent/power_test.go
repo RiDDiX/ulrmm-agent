@@ -4,6 +4,7 @@
 package agent
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"runtime"
@@ -441,5 +442,76 @@ func TestAwakeTransitions(t *testing.T) {
 	step("restart on battery", until(0), "0", 2)
 	if err := ReleaseKeepAwakeFile(); err != nil || disable != "0" {
 		t.Fatal("release of a free state changed the lid", err, disable)
+	}
+}
+
+// a lid undo that fails keeps the old value in the file and is tried again;
+// a hold in between keeps the value from before the first hold
+func TestAwakeUndoRetried(t *testing.T) {
+	dir := t.TempDir()
+	disable, failUndo := "0", 1
+	oldDir, oldHold, oldUndo, oldAC := awakeStateDir, holdLid, undoLid, onACPower
+	awakeStateDir = func() string { return dir }
+	holdLid = func(st *awakeState) error {
+		if st.DisableSleep == "" {
+			st.DisableSleep = disable
+		}
+		disable = "1"
+		return nil
+	}
+	undoLid = func(st awakeState) error {
+		if failUndo > 0 {
+			failUndo--
+			return errors.New("pmset failed")
+		}
+		disable = st.DisableSleep
+		return nil
+	}
+	onACPower = func() bool { return false }
+	awake.Lock()
+	awake.watching = true
+	defer func() {
+		stopRetryLocked()
+		awake.watching = false
+		awake.Unlock()
+		awakeStateDir, holdLid, undoLid, onACPower = oldDir, oldHold, oldUndo, oldAC
+	}()
+	until := func(v int64) func(*awakeState) { return func(st *awakeState) { st.Until = v } }
+	saved := func() string {
+		t.Helper()
+		st, ok := loadAwakeState()
+		if !ok {
+			t.Fatal("state file gone")
+		}
+		return st.DisableSleep
+	}
+	now := time.Now().Unix()
+
+	if err := applyAwakeLocked(until(now + 3600)); err != nil || disable != "1" || saved() != "0" {
+		t.Fatalf("hold: %v disablesleep %s", err, disable)
+	}
+	if err := applyAwakeLocked(until(0)); err == nil || awake.retry == nil || disable != "1" || saved() != "0" {
+		t.Fatalf("failed undo: %v retry %v disablesleep %s", err, awake.retry != nil, disable)
+	}
+	// what the retry timer runs
+	if err := applyAwakeLocked(nil); err != nil || awake.retry != nil || disable != "0" {
+		t.Fatalf("retry: %v disablesleep %s", err, disable)
+	}
+	if _, err := os.Stat(awakeStateFile()); !os.IsNotExist(err) {
+		t.Fatal("state file kept after the undo")
+	}
+
+	failUndo = 1
+	if err := applyAwakeLocked(until(now + 3600)); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyAwakeLocked(until(0)); err == nil {
+		t.Fatal("undo did not fail")
+	}
+	if err := applyAwakeLocked(until(now + 3600)); err != nil || awake.retry != nil || saved() != "0" {
+		t.Fatalf("hold during a pending undo: %v saved %q", err, saved())
+	}
+	if err := applyAwakeLocked(until(0)); err != nil || disable != "0" {
+		t.Fatalf("undo: %v disablesleep %s", err, disable)
 	}
 }

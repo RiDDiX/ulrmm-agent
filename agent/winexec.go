@@ -8,24 +8,33 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 	"unicode/utf16"
+	"unicode/utf8"
 )
 
 // Argument building and checks with no Windows API, so the Linux test run covers them.
 
 // scriptText is the file content RunScript writes. Windows PowerShell 5.1
 // reads a .ps1 without BOM in the ANSI code page; cmd would run a BOM as
-// part of the first line.
+// part of the first line. cmd reads a batch file line by line in the
+// console code page, so a script with non-ASCII text switches it to UTF-8
+// first; ASCII-only scripts are written unchanged.
 func scriptText(shell, code string) string {
-	if shell == "powershell" && !strings.HasPrefix(code, "\uFEFF") {
+	switch {
+	case shell == "powershell" && !strings.HasPrefix(code, "\uFEFF"):
 		return "\uFEFF" + code
+	case shell == "cmd" && strings.IndexFunc(code, func(r rune) bool { return r >= utf8.RuneSelf }) >= 0:
+		return cmdUTF8Line + code
 	}
 	return code
 }
+
+const cmdUTF8Line = "@chcp 65001>nul\r\n"
 
 // scriptExt is the file extension Windows needs to run a script of shell.
 func scriptExt(shell string) string {
@@ -79,25 +88,37 @@ func winScriptArgv(shell, script string, bins winScriptBins, args, env []string,
 	return append(argv, args...), env, needs, nil
 }
 
-// cmdShellArgv builds a CMDShell command. A command string for cmd goes to
+// cmdShellArgv builds a CMDShell command. For cmd the command goes to
 // Windows as raw text after /C (rawLine), so the caller's quoting is kept;
-// otherwise argv is used.
-func cmdShellArgv(shell string, args []string, command, cmdExe, psExe string) (argv []string, rawLine string, err error) {
+// powershell gets argv.
+func cmdShellArgv(shell, command, cmdExe, psExe string) (argv []string, rawLine string, err error) {
 	switch shell {
 	case "cmd":
-		if len(args) > 0 && command == "" {
-			return append([]string{cmdExe, "/C"}, args...), "", nil
-		}
 		// /S: cmd drops exactly the outer quotes added here, so a quoted
 		// program with quoted arguments stays intact
 		return []string{cmdExe}, quoteCmdArg(cmdExe) + ` /S /C "` + command + `"`, nil
 	case "powershell":
-		if len(args) > 0 && command == "" {
-			return append([]string{psExe, "-NonInteractive", "-NoProfile"}, args...), "", nil
-		}
 		return []string{psExe, "-NonInteractive", "-NoProfile", command}, "", nil
 	}
 	return nil, "", fmt.Errorf("unsupported shell: %s", shell)
+}
+
+// streamShell runs a CMDShell command with run. With publish set, every
+// output line is also published and the stream ends with exactly one done
+// frame, also when run fails before a process starts (exit code -1, as the
+// posix run-as failure).
+func streamShell(publish func(v interface{}), stdout, stderr io.Writer, run func(outW, errW io.Writer) (int, error)) (int, error) {
+	if publish == nil {
+		return run(stdout, stderr)
+	}
+	line := func(s string) { publish(CleanString(s)) }
+	outLines, errLines := &lineCollector{onLine: line}, &lineCollector{onLine: line}
+	code, err := run(io.MultiWriter(stdout, outLines), io.MultiWriter(stderr, errLines))
+	// text() sends a last line without a trailing newline
+	outLines.text()
+	errLines.text()
+	publish(map[string]interface{}{"done": true, "exit_code": code})
+	return code, err
 }
 
 func quoteCmdArg(p string) string {

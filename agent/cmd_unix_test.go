@@ -20,6 +20,7 @@ import (
 	"time"
 
 	rmm "git.riddix.de/RiDDiX/ulrmm-agent/shared"
+	"github.com/shirou/gopsutil/v3/process"
 )
 
 func sh(a *Agent, command string, timeout int) CmdStatus {
@@ -95,17 +96,78 @@ func TestCmdV2TimeoutKillsTree(t *testing.T) {
 	}
 }
 
-// alive: a zombie waiting for its reaper counts as dead
+func init() {
+	// a child that leaves its process group, writes its pid to args[0] and
+	// never answers
+	testModes["-setsid"] = func(args []string) {
+		if _, err := syscall.Setsid(); err != nil {
+			os.Exit(2)
+		}
+		if err := os.WriteFile(args[0], []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+			os.Exit(2)
+		}
+		hang()
+	}
+	// its parent, which stays alive as well
+	testModes["-spawn-setsid"] = func(args []string) {
+		self, err := os.Executable()
+		if err != nil || exec.Command(self, "-setsid", args[0]).Start() != nil {
+			os.Exit(2)
+		}
+		hang()
+	}
+}
+
+// waitDead polls until pid is gone, false when it is still alive after 2 s.
+func waitDead(pid int) bool {
+	for i := 0; i < 100; i++ {
+		if !alive(pid) {
+			return true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return false
+}
+
+// A child that left the process group is found through its parent, which
+// is alive until the timeout.
+func TestCmdV2TimeoutKillsChildOutsideTheGroup(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	a := testUpdateAgent()
+	opts := a.NewCMDOpts()
+	// 5 s outlasts a slow start of both processes; the child must be out of the group first
+	opts.IsScript, opts.Shell, opts.Args, opts.Timeout = true, self, []string{"-spawn-setsid", pidFile}, 5
+	if out := a.CmdV2(opts); out.Status.Exit != cmdTimeoutExit {
+		t.Fatalf("got %+v", out)
+	}
+	b, _ := os.ReadFile(pidFile)
+	pid, _ := strconv.Atoi(string(b))
+	if pid == 0 {
+		t.Fatal("the child did not start")
+	}
+	if !waitDead(pid) {
+		syscall.Kill(pid, syscall.SIGKILL)
+		t.Fatalf("child %d outside the process group survived the timeout", pid)
+	}
+}
+
+// alive: a zombie waiting for its reaper counts as dead. Without an init
+// that reaps (a container), a killed orphan stays one and still answers
+// signal 0.
 func alive(pid int) bool {
 	if syscall.Kill(pid, 0) != nil {
 		return false
 	}
-	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	p, err := process.NewProcess(int32(pid))
 	if err != nil {
-		return true
+		return false
 	}
-	f := strings.Fields(string(b[strings.LastIndexByte(string(b), ')')+1:]))
-	return len(f) == 0 || f[0] != "Z"
+	st, err := p.Status()
+	return err != nil || len(st) == 0 || st[0] != process.Zombie
 }
 
 func TestCmdV2RetriesETXTBSY(t *testing.T) {

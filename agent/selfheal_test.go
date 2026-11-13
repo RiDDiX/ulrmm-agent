@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -434,5 +435,79 @@ func TestDisabledSwitch(t *testing.T) {
 	f.p.running = false
 	if a := f.h.run(); len(a) != 0 {
 		t.Fatalf("disabled healer acted: %v", a)
+	}
+}
+
+// launchctl and service answers: only a query that ran to its end can say
+// missing or stopped. The test binary stands in for the tools, see
+// TestMain.
+func TestServiceQueryAnswers(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a killed process exits 1 on Windows")
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(args ...string) error {
+		_, err := healCmd(time.Minute, self, args...)
+		return err
+	}
+	exit0, exit1, exit3, exit113 := run("-exit", "0"), run("-exit", "1"), run("-exit", "3"), run("-exit", "113")
+	_, hang := healCmd(200*time.Millisecond, self, "-hang")
+	_, absent := healCmd(time.Minute, filepath.Join(t.TempDir(), "launchctl"))
+	if hang == nil || absent == nil {
+		t.Fatalf("hang %v absent %v", hang, absent)
+	}
+
+	for _, c := range []struct {
+		name               string
+		out                string
+		err                error
+		plist              bool
+		installed, running bool
+	}{
+		{"running", "\tstate = running\n", exit0, true, true, true},
+		{"loaded, no plist", "\tstate = running\n", exit0, false, false, true},
+		{"loaded, stopped", "\tstate = not running\n", exit0, true, true, false},
+		{"unknown job", "Bad request.\nCould not find service \"x\" in domain for system\n", exit113, true, false, false},
+		{"timeout", "", hang, true, true, true},
+		{"no launchctl", "", absent, true, true, true},
+		{"other failure", "", exit1, true, true, true},
+	} {
+		if i, r := launchdServiceState(c.out, c.err, c.plist); i != c.installed || r != c.running {
+			t.Fatalf("launchd %s: %v %v", c.name, i, r)
+		}
+	}
+
+	for _, c := range []struct {
+		name               string
+		enabled, status    error
+		installed, running bool
+	}{
+		{"enabled, running", exit0, exit0, true, true},
+		{"enabled, stopped", exit0, exit1, true, false},
+		{"enabled, status exits 3", exit0, exit3, true, false},
+		{"enabled query exits 3", exit3, exit0, false, true},
+		{"not enabled", exit1, exit1, false, false},
+		{"enabled query timed out", hang, exit0, true, true},
+		{"status query timed out", exit0, hang, true, true},
+		{"no service command", absent, absent, true, true},
+	} {
+		if i, r := rcServiceState(c.enabled, c.status); i != c.installed || r != c.running {
+			t.Fatalf("rc %s: %v %v", c.name, i, r)
+		}
+	}
+
+	// an unreadable answer costs no repair
+	f := newHealFixture(t)
+	_ = f.h.setup(f.main)
+	f.p.installed, f.p.running = launchdServiceState("", hang, true)
+	if a := f.h.run(); len(a) != 0 || f.p.ensured != 0 || f.p.restarts != 0 {
+		t.Fatalf("timeout repaired: %v", a)
+	}
+	f.p.installed, f.p.running = launchdServiceState("Could not find service", exit113, true)
+	if a := f.h.run(); len(a) != 1 || f.p.ensured != 1 {
+		t.Fatalf("missing job not repaired: %v", a)
 	}
 }

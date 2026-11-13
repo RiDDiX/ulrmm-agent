@@ -24,11 +24,6 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// SetDetached gives a child no console and its own process group.
-func SetDetached() *syscall.SysProcAttr {
-	return &syscall.SysProcAttr{CreationFlags: detachedFlags}
-}
-
 // getUserToken is the token of the user at the console or in the active
 // remote session: an administrator's elevated linked token when there is
 // one, else the session's own token. The caller closes it.
@@ -99,13 +94,10 @@ func secondsCtx(timeout int) (context.Context, context.CancelFunc) {
 // CMD runs exe with args. On any failure (start, non-zero exit, timeout)
 // the output is dropped and the error carries the cleaned stderr; the
 // mesh, shutdown and service callers rely on that.
-func CMD(exe string, args []string, timeout int, detached bool) ([2]string, error) {
+func CMD(exe string, args []string, timeout int) ([2]string, error) {
 	ctx, cancel := secondsCtx(timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, exe, args...)
-	if detached {
-		cmd.SysProcAttr = SetDetached()
-	}
 	var stdout, stderr bytes.Buffer
 	code, _, err := winExec(ctx, cmd, &stdout, &stderr)
 	if err == nil && code != 0 {
@@ -121,47 +113,37 @@ func CMD(exe string, args []string, timeout int, detached bool) ([2]string, erro
 // command actions and the power helpers. With stream set every output line
 // also goes to <agentID>.cmdoutput.<cmdID>, then one done message with the
 // exit code. It returns the cleaned output and the wait or timeout error.
-func CMDShell(shell string, cmdArgs []string, command string, timeout int, detached, runAsUser, stream bool, agentID, cmdID *string, nc *nats.Conn) ([2]string, error) {
-	argv, rawLine, err := cmdShellArgv(shell, cmdArgs, command, getCMDExe(), getPowershellExe())
-	if err != nil {
-		return [2]string{"", err.Error()}, err
-	}
-	ctx, cancel := secondsCtx(timeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	attr := &syscall.SysProcAttr{CmdLine: rawLine}
-	if detached {
-		attr.CreationFlags |= detachedFlags
-	}
-	if runAsUser {
-		tok, err := getUserToken()
-		if err != nil {
-			return [2]string{"", err.Error()}, err
-		}
-		defer tok.Close()
-		attr.Token = syscall.Token(tok.Token())
-		attr.CreationFlags |= windows.CREATE_NO_WINDOW
-	}
-	cmd.SysProcAttr = attr
-
-	stdout, stderr := newCappedOutput(), newCappedOutput()
-	var outW, errW io.Writer = stdout, stderr
+func CMDShell(shell, command string, timeout int, runAsUser, stream bool, agentID, cmdID *string, nc *nats.Conn) ([2]string, error) {
 	var publish func(v interface{})
-	var outLines, errLines *lineCollector
 	if stream && nc != nil && agentID != nil && cmdID != nil {
 		subject := fmt.Sprintf("%s.cmdoutput.%s", *agentID, *cmdID)
 		publish = func(v interface{}) { _ = publishFrame(nc, subject, v) }
-		line := func(s string) { publish(CleanString(s)) }
-		outLines, errLines = &lineCollector{onLine: line}, &lineCollector{onLine: line}
-		outW, errW = io.MultiWriter(stdout, outLines), io.MultiWriter(stderr, errLines)
 	}
-
-	code, _, err := winExec(ctx, cmd, outW, errW)
-	if publish != nil {
-		outLines.text()
-		errLines.text()
-		publish(map[string]interface{}{"done": true, "exit_code": code})
-	}
+	stdout, stderr := newCappedOutput(), newCappedOutput()
+	code, err := streamShell(publish, stdout, stderr, func(outW, errW io.Writer) (int, error) {
+		argv, rawLine, err := cmdShellArgv(shell, command, getCMDExe(), getPowershellExe())
+		if err != nil {
+			fmt.Fprint(errW, err.Error())
+			return -1, err
+		}
+		ctx, cancel := secondsCtx(timeout)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+		attr := &syscall.SysProcAttr{CmdLine: rawLine}
+		if runAsUser {
+			tok, err := getUserToken()
+			if err != nil {
+				fmt.Fprint(errW, err.Error())
+				return -1, err
+			}
+			defer tok.Close()
+			attr.Token = syscall.Token(tok.Token())
+			attr.CreationFlags |= windows.CREATE_NO_WINDOW
+		}
+		cmd.SysProcAttr = attr
+		code, _, err := winExec(ctx, cmd, outW, errW)
+		return code, err
+	})
 	if err == nil && code != 0 {
 		err = fmt.Errorf("exit status %d", code)
 	}

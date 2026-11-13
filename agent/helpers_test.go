@@ -326,6 +326,33 @@ func TestExtractTarGz(t *testing.T) {
 	}
 }
 
+func TestExtractTarGzLimits(t *testing.T) {
+	oldMax, oldEntries := unzipMax, unzipEntriesMax
+	defer func() { unzipMax, unzipEntriesMax = oldMax, oldEntries }()
+	dir := t.TempDir()
+	a := testUpdateAgent()
+	p := filepath.Join(dir, "a.tar.gz")
+	writeTarGz(t, p,
+		&tar.Header{Name: "one", Typeflag: tar.TypeReg, Mode: 0o644, Size: 6},
+		&tar.Header{Name: "two", Typeflag: tar.TypeReg, Mode: 0o644, Size: 6},
+	)
+	unzipMax = 10
+	if _, err := a.ExtractTarGz(p, filepath.Join(dir, "big")); err == nil || !strings.Contains(err.Error(), "unpacks to more than") {
+		t.Fatalf("12 bytes past a 10 byte limit: %v", err)
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "big", "two")); err != nil || fi.Size() > 5 {
+		t.Fatalf("copy not stopped at the limit: %v %v", fi, err)
+	}
+	unzipMax = 12
+	if _, err := a.ExtractTarGz(p, filepath.Join(dir, "fits")); err != nil {
+		t.Fatal(err)
+	}
+	unzipEntriesMax = 1
+	if _, err := a.ExtractTarGz(p, filepath.Join(dir, "many")); err == nil || !strings.Contains(err.Error(), "more than 1 entries") {
+		t.Fatalf("two entries past a limit of one: %v", err)
+	}
+}
+
 // fakeProxy answers one CONNECT with status and then sends extra bytes.
 func fakeProxy(t *testing.T, status string, gotReq chan<- *http.Request) string {
 	t.Helper()

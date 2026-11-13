@@ -75,9 +75,9 @@ func (a *Agent) EditService(_, _ string) rmm.SvcActionResult    { return noWinSv
 var noWinSvc = rmm.SvcActionResult{OK: false, Reason: "/na"}
 
 // CMD and CMDShell run Windows programs; posix commands go through CmdV2.
-func CMD(_ string, _ []string, _ int, _ bool) ([2]string, error) { return [2]string{}, nil }
+func CMD(_ string, _ []string, _ int) ([2]string, error) { return [2]string{}, nil }
 
-func CMDShell(_ string, _ []string, _ string, _ int, _, _, _ bool, _, _ *string, _ *nats.Conn) ([2]string, error) {
+func CMDShell(_, _ string, _ int, _, _ bool, _, _ *string, _ *nats.Conn) ([2]string, error) {
 	return [2]string{}, nil
 }
 

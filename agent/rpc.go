@@ -470,7 +470,7 @@ func (r *rpcReq) run() {
 		}
 		if runtime.GOOS == "windows" {
 			r.reply("ok")
-			if _, err := CMD(a.EXE, []string{"-m", "runchecks"}, 600, false); err != nil {
+			if _, err := CMD(a.EXE, []string{"-m", "runchecks"}, checkRunnerBudget); err != nil {
 				a.Logger.Errorln("RPC RunChecks", err)
 			}
 			return
@@ -616,7 +616,7 @@ func (a *Agent) rpcRawCmd(r *rpcReq) {
 		if !windowsShell(shell) {
 			result = fmt.Sprintf("unsupported shell: %s", shell)
 		} else {
-			out, _ := CMDShell(shell, []string{}, command, timeout, false, p.RunAsUser, p.Stream, &a.AgentID, &cmdID, r.nc)
+			out, _ := CMDShell(shell, command, timeout, p.RunAsUser, p.Stream, &a.AgentID, &cmdID, r.nc)
 			result = joinStreams(out[0], out[1])
 		}
 	} else {
@@ -710,7 +710,7 @@ func (a *Agent) powerAction(nc *nats.Conn, reboot bool) {
 		if reboot {
 			flag = "/r"
 		}
-		if _, err := CMD("shutdown.exe", []string{flag, "/t", "5", "/f"}, 15, false); err != nil {
+		if _, err := CMD("shutdown.exe", []string{flag, "/t", "5", "/f"}, 15); err != nil {
 			a.Logger.Errorln("shutdown.exe:", err)
 		}
 		return

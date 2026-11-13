@@ -5,6 +5,8 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -103,14 +105,14 @@ func milliC(path string, limit bool) *int {
 
 var nvmeNameRe = regexp.MustCompile(`^nvme[0-9]{1,3}$`)
 
-func collectHealth(ctx context.Context, h *Health) {
+func healthStages() []healthStage {
+	return []healthStage{noCtx(linuxPower), linuxSecurity, linuxDisks, noCtx(linuxBattery), noCtx(linuxTemps)}
+}
+
+func linuxPower(h *Health) {
 	if b, err := os.ReadFile("/sys/power/state"); err == nil {
 		h.Power.S3 = ptr(strings.Contains(string(b), "mem"))
 	}
-	linuxSecurity(ctx, h)
-	linuxDisks(ctx, h)
-	linuxBattery(h)
-	linuxTemps(h)
 }
 
 // reported, not alerted: ClamAV and ufw/firewalld/nftables
@@ -153,13 +155,23 @@ func linuxSecurity(ctx context.Context, h *Health) {
 
 func linuxDisks(ctx context.Context, h *Health) {
 	h.Disks = make([]HDisk, 0)
-	ents, _ := os.ReadDir("/sys/class/nvme")
+	nvmeDisks(h, "/sys/class/nvme", "/dev")
+	// the ioctl has the NVMe disks
+	smartctlDisks(ctx, h, true)
+}
+
+func nvmeDisks(h *Health, sysRoot, devRoot string) {
+	ents, _ := os.ReadDir(sysRoot)
 	for _, e := range ents {
 		n := e.Name()
 		if !nvmeNameRe.MatchString(n) {
 			continue
 		}
-		buf, err := nvmeSmartLog("/dev/" + n)
+		buf, err := nvmeSmartLog(filepath.Join(devRoot, n))
+		// a container sees the host's controllers in sysfs but has no node for them
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
 		if err != nil {
 			h.errf("%s: %v", n, err)
 			continue
@@ -168,20 +180,17 @@ func linuxDisks(ctx context.Context, h *Health) {
 		if !ok {
 			continue
 		}
-		d.Name = strings.TrimSpace(readStr("/sys/class/nvme/" + n + "/model"))
+		d.Name = strings.TrimSpace(readStr(filepath.Join(sysRoot, n, "model")))
 		if d.Name == "" {
 			d.Name = n
 		}
 		// composite sensor limits from the nvme hwmon (WCTEMP/CCTEMP)
-		if hw, _ := filepath.Glob("/sys/class/nvme/" + n + "/hwmon*"); len(hw) > 0 {
+		if hw, _ := filepath.Glob(filepath.Join(sysRoot, n, "hwmon*")); len(hw) > 0 {
 			d.TempWarnC = milliC(hw[0]+"/temp1_max", true)
 			d.TempCritC = milliC(hw[0]+"/temp1_crit", true)
 		}
 		h.addDisk(d)
 	}
-
-	// the ioctl above has the NVMe disks
-	smartctlDisks(ctx, h, true)
 }
 
 func linuxBattery(h *Health) {

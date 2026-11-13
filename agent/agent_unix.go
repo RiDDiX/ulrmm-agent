@@ -656,7 +656,6 @@ func (a *Agent) restartAgentService() error {
 	}
 	opts := a.NewCMDOpts()
 	opts.IsScript = true
-	opts.Detached = true
 	opts.Shell = argv[0]
 	opts.Args = argv[1:]
 	if out := a.CmdV2(opts); out.Status.Exit != 0 {
@@ -849,7 +848,7 @@ func (a *Agent) AgentUninstall(_ string) {
 	cmd := exec.Command(self, "-m", "uninstall")
 	cmd.Env = append(os.Environ(), "ULRMM_UNINSTALL_CODE="+code)
 	cmd.Stdout, cmd.Stderr = &out, &out
-	setProcGroup(cmd, true)
+	setProcGroup(cmd)
 	if err := cmd.Start(); err != nil {
 		a.Logger.Errorln("AgentUninstall():", err)
 		return

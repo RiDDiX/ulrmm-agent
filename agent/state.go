@@ -737,13 +737,36 @@ func psMounts(ctx context.Context, e *errs) []SMount {
 	return ret
 }
 
+// shallowMounts keeps the n mounts with the fewest path elements, in their
+// order: a host with many datasets still reports its pools, not only the
+// boot pool's children. Ties keep the earlier mount.
+func shallowMounts(ms []SMount, n int) []SMount {
+	if len(ms) <= n {
+		return ms
+	}
+	depth := func(m string) int {
+		m = strings.TrimRight(m, `/\`)
+		return strings.Count(m, "/") + strings.Count(m, `\`)
+	}
+	idx := make([]int, len(ms))
+	for i := range idx {
+		idx[i] = i
+	}
+	sort.SliceStable(idx, func(a, b int) bool { return depth(ms[idx[a]].Mount) < depth(ms[idx[b]].Mount) })
+	keep := idx[:n]
+	sort.Ints(keep)
+	out := make([]SMount, n)
+	for j, i := range keep {
+		out[j] = ms[i]
+	}
+	return out
+}
+
 // statfs per mount in its own goroutine. One that has not answered within 2 s
 // is stale and left alone for 30 min; statBounded never starts a second call
 // while one still hangs.
 func statMounts(ms []SMount) []SMount {
-	if len(ms) > 32 {
-		ms = ms[:32]
-	}
+	ms = shallowMounts(ms, 32)
 	type res struct {
 		i   int
 		u   *disk.UsageStat

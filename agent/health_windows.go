@@ -65,13 +65,13 @@ type reliabilityCounter struct {
 	PowerOnHours   uint32
 }
 
-func collectHealth(ctx context.Context, h *Health) {
-	winPower(h)
-	winSecurity(h)
-	winDisks(ctx, h)
-	winBattery(h)
-	// MSAcpi_ThermalZoneTemperature is absent or a static ACPI value on the
-	// machines measured, CPU sensors need a kernel driver: disks carry the temps
+func healthStages() []healthStage {
+	return []healthStage{noCtx(winPower), noCtx(winSecurity), winDisks, noCtx(winBattery), noCtx(winTemps)}
+}
+
+// MSAcpi_ThermalZoneTemperature is absent or a static ACPI value on the
+// machines measured, CPU sensors need a kernel driver: disks carry the temps
+func winTemps(h *Health) {
 	h.Temps = make([]HTemp, 0)
 }
 

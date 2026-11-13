@@ -4,10 +4,14 @@
 package agent
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
+	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestWSCState(t *testing.T) {
@@ -73,7 +77,16 @@ func TestParseNvmeLog(t *testing.T) {
 	if !ok || d.Health != "ok" || *d.TempC != 45 || *d.WearPct != 7 || *d.POH != 6312 || *d.MediaErrors != 0 {
 		t.Fatalf("%+v", d)
 	}
+	// bit 1 (temperature threshold) alone is no failing drive
+	b[0] = 0x02
+	if d, _ := parseNvmeLog(b); d.Health != "ok" || d.Smart != "passed" || *d.CriticalWarning != 0 {
+		t.Fatalf("%+v", d)
+	}
 	b[0] = 0x04
+	if d, _ := parseNvmeLog(b); d.Health != "failing" || d.Smart != "failed" || *d.CriticalWarning != 4 {
+		t.Fatalf("%+v", d)
+	}
+	b[0] = 0x06
 	if d, _ := parseNvmeLog(b); d.Health != "failing" || d.Smart != "failed" || *d.CriticalWarning != 4 {
 		t.Fatalf("%+v", d)
 	}
@@ -186,5 +199,170 @@ func TestHealthCaps(t *testing.T) {
 	}
 	if len(h.Disks) != healthMaxList || len(h.Temps) != healthMaxList || len(h.Errors) != 16 || len(h.Errors[0]) != 128 {
 		t.Fatalf("%d %d %d", len(h.Disks), len(h.Temps), len(h.Errors))
+	}
+}
+
+// A stage that overruns the deadline costs only its own sections; it keeps
+// writing after the report is returned without touching it.
+func TestRunHealthKeepsFinishedSectionsOnTimeout(t *testing.T) {
+	release, slowDone := make(chan struct{}), make(chan struct{})
+	h := runHealth([]healthStage{
+		func(_ context.Context, h *Health) {
+			h.AV = []HAV{{Name: "ClamAV"}}
+			h.errf("ufw: gone")
+		},
+		func(ctx context.Context, h *Health) {
+			<-ctx.Done()
+			<-release
+			h.Disks = append(h.Disks, HDisk{Name: "late"})
+			h.errf("late")
+			close(slowDone)
+		},
+		func(_ context.Context, h *Health) { h.Temps = []HTemp{{Name: "never"}} },
+	}, 200*time.Millisecond)
+	close(release)
+	<-slowDone
+	if len(h.Errors) != 2 || h.Errors[0] != "collection timed out" || h.Errors[1] != "ufw: gone" {
+		t.Fatalf("errors %q", h.Errors)
+	}
+	if len(h.AV) != 1 || h.Disks != nil || h.Temps != nil || h.V != 1 {
+		t.Fatalf("%+v", h)
+	}
+}
+
+func TestRunHealthMergesAllStages(t *testing.T) {
+	h := runHealth([]healthStage{
+		func(_ context.Context, h *Health) { h.Power.S3 = ptr(true) },
+		func(_ context.Context, h *Health) { h.Power.ModernStandby = ptr(false); h.AV = []HAV{} },
+		func(_ context.Context, h *Health) { panic("boom") },
+		func(_ context.Context, h *Health) { h.Disks = []HDisk{{Name: "a"}}; h.Firewall = &HFirewall{} },
+	}, time.Minute)
+	if h.Power.S3 == nil || !*h.Power.S3 || h.Power.ModernStandby == nil || len(h.Disks) != 1 || h.Firewall == nil {
+		t.Fatalf("%+v", h)
+	}
+	// [] and null mean different things to the server
+	if h.AV == nil || h.Temps != nil {
+		t.Fatalf("av %v temps %v", h.AV, h.Temps)
+	}
+	if len(h.Errors) != 1 || !strings.Contains(h.Errors[0], "collector panic: boom") {
+		t.Fatalf("errors %q", h.Errors)
+	}
+}
+
+// fillNonZero gives every field reachable from v a non-zero value.
+func fillNonZero(t *testing.T, v reflect.Value) {
+	switch v.Kind() {
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			fillNonZero(t, v.Field(i))
+		}
+	case reflect.Pointer:
+		v.Set(reflect.New(v.Type().Elem()))
+		fillNonZero(t, v.Elem())
+	case reflect.Slice:
+		v.Set(reflect.MakeSlice(v.Type(), 1, 1))
+		fillNonZero(t, v.Index(0))
+	case reflect.Map:
+		k, e := reflect.New(v.Type().Key()).Elem(), reflect.New(v.Type().Elem()).Elem()
+		fillNonZero(t, k)
+		fillNonZero(t, e)
+		v.Set(reflect.MakeMap(v.Type()))
+		v.SetMapIndex(k, e)
+	case reflect.String:
+		v.SetString("x")
+	case reflect.Bool:
+		v.SetBool(true)
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		v.SetInt(1)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		v.SetUint(1)
+	case reflect.Float32, reflect.Float64:
+		v.SetFloat(1)
+	default:
+		t.Fatalf("no filler for %s", v.Type())
+	}
+}
+
+// A section added to Health (or HPower) must also be taken over by merge,
+// or every report drops it.
+func TestHealthMergeTakesEveryField(t *testing.T) {
+	var src, dst Health
+	stamps := map[string]bool{"V": true, "TS": true, "MS": true}
+	sv := reflect.ValueOf(&src).Elem()
+	for i := 0; i < sv.NumField(); i++ {
+		if !stamps[sv.Type().Field(i).Name] {
+			fillNonZero(t, sv.Field(i))
+		}
+	}
+	dst.merge(&src)
+	dv := reflect.ValueOf(dst)
+	for i := 0; i < sv.NumField(); i++ {
+		f := sv.Type().Field(i)
+		if !stamps[f.Name] && !reflect.DeepEqual(dv.Field(i).Interface(), sv.Field(i).Interface()) {
+			t.Errorf("merge drops %s: got %+v, want %+v", f.Name, dv.Field(i).Interface(), sv.Field(i).Interface())
+		}
+	}
+}
+
+func TestForEachParallel(t *testing.T) {
+	var running, peak atomic.Int32
+	got := make([]int, 20)
+	forEachParallel(len(got), smartctlWorkers, func(i int) {
+		n := running.Add(1)
+		for {
+			p := peak.Load()
+			if n <= p || peak.CompareAndSwap(p, n) {
+				break
+			}
+		}
+		got[i] = i * i
+		running.Add(-1)
+	})
+	for i, v := range got {
+		if v != i*i {
+			t.Fatalf("slot %d holds %d", i, v)
+		}
+	}
+	if p := peak.Load(); p > smartctlWorkers {
+		t.Fatalf("%d at once", p)
+	}
+	forEachParallel(0, smartctlWorkers, func(int) { t.Fatal("called for no work") })
+}
+
+// A panic on a worker reaches the caller after every index was handed out,
+// and through runHealth costs only its own stage.
+func TestForEachParallelPanic(t *testing.T) {
+	var calls atomic.Int32
+	got := func() (p interface{}) {
+		defer func() { p = recover() }()
+		forEachParallel(20, smartctlWorkers, func(i int) {
+			calls.Add(1)
+			if i == 3 {
+				panic("disk 3")
+			}
+		})
+		return nil
+	}()
+	if got != "disk 3" || calls.Load() != 20 {
+		t.Fatalf("panic %v after %d calls", got, calls.Load())
+	}
+
+	h := runHealth([]healthStage{
+		func(_ context.Context, h *Health) { h.AV = []HAV{{Name: "ClamAV"}} },
+		func(_ context.Context, h *Health) {
+			h.Disks = []HDisk{{Name: "lost"}}
+			forEachParallel(8, smartctlWorkers, func(i int) {
+				if i == 5 {
+					panic("disk 5")
+				}
+			})
+		},
+		func(_ context.Context, h *Health) { h.Temps = []HTemp{{Name: "cpu"}} },
+	}, time.Minute)
+	if len(h.AV) != 1 || len(h.Temps) != 1 || h.Disks != nil {
+		t.Fatalf("%+v", h)
+	}
+	if len(h.Errors) != 1 || h.Errors[0] != "collector panic: disk 5" {
+		t.Fatalf("errors %q", h.Errors)
 	}
 }

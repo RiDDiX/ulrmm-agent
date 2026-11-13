@@ -461,7 +461,7 @@ func (a *Agent) CheckRunner() {
 			a.Logger.Debugln("CheckRunner():", err)
 		} else if !a.ChecksRunning() {
 			if runtime.GOOS == "windows" {
-				if _, err := CMD(a.EXE, []string{"-m", "checkrunner"}, 600, false); err != nil {
+				if _, err := CMD(a.EXE, []string{"-m", "checkrunner"}, checkRunnerBudget); err != nil {
 					a.Logger.Errorln("Checkrunner RunChecks", err)
 				}
 			} else {

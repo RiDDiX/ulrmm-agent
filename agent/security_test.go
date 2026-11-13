@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -123,7 +124,30 @@ func TestMain(m *testing.M) {
 		fmt.Println("-version")
 		os.Exit(0)
 	}
+	// stand-ins for system tools: an exit status, or one that never answers
+	if len(os.Args) == 3 && os.Args[1] == "-exit" {
+		code, _ := strconv.Atoi(os.Args[2])
+		os.Exit(code)
+	}
+	if len(os.Args) == 2 && os.Args[1] == "-hang" {
+		hang()
+	}
+	if len(os.Args) > 1 && testModes[os.Args[1]] != nil {
+		testModes[os.Args[1]](os.Args[2:])
+		os.Exit(0)
+	}
 	os.Exit(m.Run())
+}
+
+// testModes holds further stand-ins that need OS-specific calls.
+var testModes = map[string]func(args []string){}
+
+// hang never returns. With only a select {} left the runtime may end the
+// process as deadlocked; a pending timer keeps it from that.
+func hang() {
+	for {
+		time.Sleep(time.Hour)
+	}
 }
 
 // A download that is not the file the server signed is refused and

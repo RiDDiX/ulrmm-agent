@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"math"
 	mrand "math/rand"
+	"net"
+	"net/http"
 	"runtime"
 	"strings"
 	"sync"
@@ -169,9 +171,21 @@ func (a *Agent) RunChecks(force bool) error {
 }
 
 func (a *Agent) sendCheckResult(payload interface{}) {
-	if _, err := a.rClient.R().SetBody(payload).Patch("/api/v3/checkrunner/"); err != nil {
+	if err := a.patchRetrying("/api/v3/checkrunner/", payload, pkgRetryWait, checkResultResend); err != nil {
 		a.Logger.Debugln("check result:", err)
 	}
+}
+
+// checkResultResend: the server stores every check result it gets (history
+// row, average sample, linked tasks), so a result is sent again only when it
+// provably did not reach the server: the connection failed, or the proxy
+// answered 502/503 for the application.
+func checkResultResend(code int, err error) bool {
+	if code == http.StatusBadGateway || code == http.StatusServiceUnavailable {
+		return true
+	}
+	var op *net.OpError
+	return code == 0 && errors.As(err, &op) && (op.Op == "dial" || op.Op == "proxyconnect")
 }
 
 func (a *Agent) DiskCheck(c rmm.CheckDef) DiskCheckResult {
@@ -218,10 +232,32 @@ func (a *Agent) PingCheck(c rmm.CheckDef) PingCheckResult {
 	return res
 }
 
+// checkRunnerBudget is how many seconds the Windows service gives one check
+// run child (-m checkrunner, -m runchecks) before it kills it.
+const checkRunnerBudget = 600
+
+// checkSendMargin (seconds) is what a script check leaves of the budget for
+// the kill grace and sending the result: three retry waits and one client
+// timeout.
+const checkSendMargin = 60
+
+// runnerScriptTimeout keeps a script check inside the runner child's budget
+// with room to send its result, so a long check ends with its own timeout
+// result instead of dying with the child. Zero and negative are left to
+// RunScript's default.
+func runnerScriptTimeout(timeout int) int {
+	return min(timeout, checkRunnerBudget-checkSendMargin)
+}
+
 func (a *Agent) ScriptCheck(c rmm.CheckDef) ScriptCheckResult {
 	res := ScriptCheckResult{resultHead: a.checkHead(c)}
+	timeout := c.TimeoutSec
+	// on Windows checks run only in the runner child
+	if runtime.GOOS == "windows" {
+		timeout = runnerScriptTimeout(timeout)
+	}
 	began := time.Now()
-	res.Out, res.ErrOut, res.ExitCode, _ = a.RunScript(c.Script.Source, c.Script.Interp, c.Args, c.TimeoutSec,
+	res.Out, res.ErrOut, res.ExitCode, _ = a.RunScript(c.Script.Source, c.Script.Interp, c.Args, timeout,
 		c.Script.AsUser, c.Env, c.NuConfig, c.DenoPerms)
 	res.Secs = time.Since(began).Seconds()
 	return res
@@ -468,7 +504,7 @@ func (a *Agent) runTaskCommand(act rmm.TaskStep) (stdout, stderr string, retcode
 		if !windowsShell(act.Interp) {
 			return "", fmt.Sprintf("unsupported shell: %s", act.Interp), 1
 		}
-		out, err := CMDShell(act.Interp, []string{}, act.Cmd, act.TimeoutSec, false, act.AsUser, false, nil, nil, nil)
+		out, err := CMDShell(act.Interp, act.Cmd, act.TimeoutSec, act.AsUser, false, nil, nil, nil)
 		if err != nil {
 			a.Logger.Debugln("RunTask() cmd:", err)
 		}

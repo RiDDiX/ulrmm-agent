@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -114,38 +115,124 @@ const (
 	healthExecMax  = 10 * time.Second
 	healthMaxList  = 64
 	healthMaxOut   = 4 << 20
+	// smartctl runs in parallel; 32 disks one after the other overrun the deadline
+	smartctlWorkers = 4
 )
 
-// Health runs the per-OS collector with one overall deadline. A collector
-// that overruns is abandoned, its commands die with the context.
+// healthStage fills its own sections of the Health it is given.
+type healthStage func(ctx context.Context, h *Health)
+
+// noCtx adapts a stage that runs no commands.
+func noCtx(f func(*Health)) healthStage {
+	return func(_ context.Context, h *Health) { f(h) }
+}
+
+// Health runs the per-OS stages with one overall deadline.
 func (a *Agent) Health() *Health {
+	return runHealth(healthStages(), healthDeadline)
+}
+
+// runHealth runs the stages in order, each on its own Health, and merges a
+// stage once it has finished. A collector that overruns is abandoned, its
+// commands die with the context; what finished before is returned.
+func runHealth(stages []healthStage, deadline time.Duration) *Health {
 	start := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), healthDeadline)
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
 	defer cancel()
 
-	ch := make(chan *Health, 1)
+	var mu sync.Mutex
+	h, finished, abandoned := &Health{}, false, false
+	done := make(chan struct{})
 	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				ch <- &Health{Errors: []string{fmt.Sprint("collector panic: ", r)}}
+		defer close(done)
+		for _, st := range stages {
+			s := &Health{}
+			p := func() (p interface{}) {
+				defer func() { p = recover() }()
+				st(ctx, s)
+				return nil
+			}()
+			mu.Lock()
+			if abandoned {
+				mu.Unlock()
+				return
 			}
-		}()
-		h := &Health{}
-		collectHealth(ctx, h)
-		ch <- h
+			if p != nil {
+				h.errf("collector panic: %v", p)
+			} else {
+				h.merge(s)
+			}
+			mu.Unlock()
+		}
+		mu.Lock()
+		finished = true
+		mu.Unlock()
 	}()
 
-	var h *Health
 	select {
-	case h = <-ch:
+	case <-done:
 	case <-ctx.Done():
-		h = &Health{Errors: []string{"collection timed out"}}
 	}
+	mu.Lock()
+	if !finished {
+		abandoned = true
+		// first, so the cap on errors never drops it
+		h.Errors = append([]string{"collection timed out"}, h.Errors...)
+	}
+	mu.Unlock()
 	h.V, h.TS, h.MS = 1, start.Unix(), time.Since(start).Milliseconds()
 	if h.Errors == nil {
 		h.Errors = []string{}
 	}
 	return h
+}
+
+// merge takes the sections a finished stage filled.
+func (h *Health) merge(s *Health) {
+	for _, e := range s.Errors {
+		h.errf("%s", e)
+	}
+	for _, f := range [][2]**bool{
+		{&h.Power.S3, &s.Power.S3}, {&h.Power.ModernStandby, &s.Power.ModernStandby},
+		{&h.Power.WompAC, &s.Power.WompAC}, {&h.Power.WompBatt, &s.Power.WompBatt},
+	} {
+		if *f[1] != nil {
+			*f[0] = *f[1]
+		}
+	}
+	mergeList(&h.AV, s.AV)
+	mergeList(&h.Disks, s.Disks)
+	mergeList(&h.Temps, s.Temps)
+	if s.Defender != nil {
+		h.Defender = s.Defender
+	}
+	if s.Firewall != nil {
+		h.Firewall = s.Firewall
+	}
+	if s.Platform != nil {
+		h.Platform = s.Platform
+	}
+	if s.Battery != nil {
+		h.Battery = s.Battery
+	}
+	if s.ThermalPressure != nil {
+		h.ThermalPressure = s.ThermalPressure
+	}
+}
+
+// mergeList keeps an empty list a stage set (the server tells [] from null).
+func mergeList[T any](dst *[]T, src []T) {
+	if src == nil {
+		return
+	}
+	if *dst == nil {
+		*dst = src
+		return
+	}
+	*dst = append(*dst, src...)
+	if len(*dst) > healthMaxList {
+		*dst = (*dst)[:healthMaxList]
+	}
 }
 
 func (h *Health) errf(format string, args ...interface{}) {
@@ -294,7 +381,9 @@ func parseNvmeLog(b []byte) (HDisk, bool) {
 		return HDisk{}, false
 	}
 	d := HDisk{Bus: "nvme", Media: "ssd", Smart: "passed", Health: "ok"}
-	cw := int(b[0])
+	// bit 1 is the temperature threshold, judged on its own fields; the
+	// server fails a disk on any bit it gets
+	cw := int(b[0]) &^ 0x02
 	d.CriticalWarning = ptr(cw)
 	if cw != 0 {
 		d.Smart, d.Health = "failed", "failing"
@@ -405,20 +494,73 @@ func smartctlDisks(ctx context.Context, h *Health, skipNvme bool) {
 		h.errf("smartctl --scan: %v", err)
 		return
 	}
+	var devs [][2]string
 	for _, dev := range parseSmartScan(out) {
 		// FreeBSD lists the optical drives (cd0) as ATA devices
 		if (skipNvme && dev[1] == "nvme") || strings.HasPrefix(dev[0], "/dev/cd") {
 			continue
 		}
+		devs = append(devs, dev)
+	}
+	type result struct {
+		d   HDisk
+		err error
+	}
+	res := make([]result, len(devs))
+	forEachParallel(len(devs), smartctlWorkers, func(i int) {
 		// -n standby: never spin up a sleeping disk
-		o, _ := runOut(ctx, "smartctl", "-n", "standby", "-i", "-H", "-A", "-j", "-d", smartctlType(dev[1]), dev[0])
-		d, err := parseSmartctl([]byte(o))
-		if err != nil {
-			h.errf("smartctl %s: %v", dev[0], err)
+		o, _ := runOut(ctx, "smartctl", "-n", "standby", "-i", "-H", "-A", "-j", "-d", smartctlType(devs[i][1]), devs[i][0])
+		res[i].d, res[i].err = parseSmartctl([]byte(o))
+	})
+	for i, r := range res {
+		if r.err != nil {
+			h.errf("smartctl %s: %v", devs[i][0], r.err)
 			continue
 		}
-		d.Name = strings.TrimSpace(d.Name + " " + dev[0])
-		h.addDisk(d)
+		r.d.Name = strings.TrimSpace(r.d.Name + " " + devs[i][0])
+		h.addDisk(r.d)
+	}
+}
+
+// forEachParallel calls f(0) to f(n-1) on at most workers goroutines and
+// returns when all calls have returned. The first panic of f is raised again
+// in the caller, where the collector's recover sees it.
+func forEachParallel(n, workers int, f func(i int)) {
+	next := make(chan int)
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		panicked bool
+		first    interface{}
+	)
+	call := func(i int) {
+		defer func() {
+			if r := recover(); r != nil {
+				mu.Lock()
+				if !panicked {
+					panicked, first = true, r
+				}
+				mu.Unlock()
+			}
+		}()
+		f(i)
+	}
+	for w := 0; w < min(workers, n); w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range next {
+				call(i)
+			}
+		}()
+	}
+	for i := 0; i < n; i++ {
+		next <- i
+	}
+	close(next)
+	wg.Wait()
+	if panicked {
+		panic(first)
 	}
 }
 

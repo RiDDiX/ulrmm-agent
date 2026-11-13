@@ -13,8 +13,8 @@ import (
 )
 
 // setProcGroup starts the child in its own process group so a timeout can
-// kill everything it spawned. Detached children are in one as well.
-func setProcGroup(cmd *exec.Cmd, _ bool) {
+// kill everything it spawned.
+func setProcGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
 

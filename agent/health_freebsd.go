@@ -23,20 +23,36 @@ func wolStates(names []string) map[string]string {
 	return ret
 }
 
-func collectHealth(ctx context.Context, h *Health) {
+func healthStages() []healthStage {
+	return []healthStage{bsdPower, bsdSecurity, bsdDisks, bsdBattery, bsdTemps}
+}
+
+func bsdPower(ctx context.Context, h *Health) {
 	if out, err := runOut(ctx, "sysctl", "-n", "hw.acpi.supported_sleep_state"); err == nil {
 		h.Power.S3 = ptr(parseSleepS3(out))
 	}
+}
+
+func bsdSecurity(ctx context.Context, h *Health) {
 	h.AV = make([]HAV, 0)
 	freebsdFirewall(ctx, h)
+}
+
+func bsdDisks(ctx context.Context, h *Health) {
 	h.Disks = make([]HDisk, 0)
 	smartctlDisks(ctx, h, false)
+}
+
+func bsdBattery(ctx context.Context, h *Health) {
 	// no battery: the oid does not exist or reads 0
 	if out, err := runOut(ctx, "sysctl", "-n", "hw.acpi.battery.units"); err == nil && strings.TrimSpace(out) != "0" {
 		if out, err := runOut(ctx, "acpiconf", "-i", "0"); err == nil {
 			h.Battery = parseAcpiconfBattery(out)
 		}
 	}
+}
+
+func bsdTemps(ctx context.Context, h *Health) {
 	h.Temps = make([]HTemp, 0)
 	out, _ := runOut(ctx, "sysctl", "-e", "dev.cpu", "hw.acpi.thermal")
 	for _, t := range parseSysctlTemps(out) {

@@ -64,8 +64,13 @@ func TestOnPowerEvent(t *testing.T) {
 	var got []sent
 	var window time.Duration
 	event := []string(nil)
-	oldAnnounce, oldEvent, oldConn := powerAnnounce, powerShutdownEvent, powerConn.Load()
-	defer func() { powerAnnounce, powerShutdownEvent = oldAnnounce, oldEvent; powerConn.Store(oldConn) }()
+	resumes := 0
+	oldAnnounce, oldEvent, oldResume, oldConn := powerAnnounce, powerShutdownEvent, powerResume, powerConn.Load()
+	defer func() {
+		powerAnnounce, powerShutdownEvent, powerResume = oldAnnounce, oldEvent, oldResume
+		powerConn.Store(oldConn)
+	}()
+	powerResume = func(*Agent, *nats.Conn) { resumes++ }
 	powerAnnounce = func(_ *Agent, _ *nats.Conn, kind, source, initiator string, budget time.Duration) error {
 		got = append(got, sent{kind, source, initiator, budget})
 		return nil
@@ -93,8 +98,16 @@ func TestOnPowerEvent(t *testing.T) {
 
 	got = nil
 	a.onPowerEvent(nil, 0xA) // PBT_POWERSETTINGCHANGE
-	if len(got) != 0 {
-		t.Errorf("other type: sent %+v", got)
+	if len(got) != 0 || resumes != 0 {
+		t.Errorf("other type: sent %+v, %d resumes", got, resumes)
+	}
+
+	// a user-triggered wake sends PBT_APMRESUMEAUTOMATIC and then
+	// PBT_APMRESUMESUSPEND (0x7): one resume
+	a.onPowerEvent(nil, pbtAPMResumeAutomatic)
+	a.onPowerEvent(nil, 0x7)
+	if len(got) != 0 || resumes != 1 {
+		t.Errorf("resume: sent %+v, %d resumes, want 1", got, resumes)
 	}
 
 	// preshutdown: nothing without a connection, then the 1074 decides

@@ -44,6 +44,10 @@ func (a *Agent) InstallChoco() {
 // script is fetched with the system trust store only, kept in tmp as it came
 // and run only when its signature checks out; the caller removes tmp.
 func (a *Agent) chocoScript(url, sha string) (script, tmp string, err error) {
+	// the directory may have gone since the service started
+	if err := createWinTempDir(); err != nil {
+		return "", "", err
+	}
 	if sha != "" {
 		tmp := filepath.Join(a.WinTmpDir, fmt.Sprintf("chocoinstall-%d.ps1", time.Now().UnixNano()))
 		defer os.Remove(tmp)
@@ -65,9 +69,6 @@ func (a *Agent) chocoScript(url, sha string) (script, tmp string, err error) {
 	}
 	if r.IsError() {
 		return "", "", fmt.Errorf("download answered %d", r.StatusCode())
-	}
-	if err := createWinTempDir(); err != nil {
-		return "", "", err
 	}
 	f, err := os.CreateTemp(a.WinTmpDir, "chocoinstall*.ps1")
 	if err != nil {

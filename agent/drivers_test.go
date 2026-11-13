@@ -199,14 +199,3 @@ func TestDropDeleted(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
-
-func TestOEMCharmap(t *testing.T) {
-	// "gelöscht" in code page 850
-	out, err := oemCharmap(850).NewDecoder().String("gel\x94scht")
-	if err != nil || out != "gelöscht" {
-		t.Fatalf("got %q %v", out, err)
-	}
-	if oemCharmap(0) != oemCharmap(850) {
-		t.Fatal("unknown code page should fall back to 850")
-	}
-}

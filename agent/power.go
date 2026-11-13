@@ -15,9 +15,18 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
-const keepAwakeMax = 6 * time.Hour
+const (
+	keepAwakeMax = 6 * time.Hour
+	// a lid undo that failed is tried again this often until it works
+	awakeUndoRetry = 5 * time.Minute
+)
+
+// where the timers report; the service sets its own logger
+var awakeLog = logrus.StandardLogger()
 
 // keepawake RPC: until is a unix epoch. until <= now cancels, more than
 // 6 h ahead is refused. Returns how long to hold.
@@ -158,7 +167,8 @@ func lidIndexArg(hex string) string {
 
 // one timed hold per agent; a new keepawake replaces the old one. pause
 // keeps the ac rule off until then (unix seconds), onAC is the power source
-// seen last, watching while the 15 s check is planned.
+// seen last, watching while the 15 s check is planned, retry while a failed
+// lid undo waits for its next try.
 var awake struct {
 	sync.Mutex
 	gen      int
@@ -167,6 +177,28 @@ var awake struct {
 	pause    int64
 	onAC     bool
 	watching bool
+	retry    *time.Timer
+}
+
+func retryUndoLocked() {
+	if awake.retry != nil {
+		return
+	}
+	awake.retry = time.AfterFunc(awakeUndoRetry, func() {
+		awake.Lock()
+		defer awake.Unlock()
+		awake.retry = nil
+		if err := applyAwakeLocked(nil); err != nil {
+			awakeLog.Errorln("keep awake:", err)
+		}
+	})
+}
+
+func stopRetryLocked() {
+	if awake.retry != nil {
+		awake.retry.Stop()
+		awake.retry = nil
+	}
 }
 
 func stopTimedLocked() {
@@ -183,6 +215,8 @@ func stopTimedLocked() {
 // applyAwakeLocked changes keepawake.json and holds or frees the lid by
 // awakeWanted. The first holder keeps the old values in the file, they go
 // back when nothing holds. Nothing is saved when the lid cannot be held.
+// The old values leave the file only once they are back; until then the
+// undo is retried and a new hold keeps them.
 func applyAwakeLocked(change func(*awakeState)) error {
 	st, ok := loadAwakeState()
 	held := awakeHeld(st, ok)
@@ -205,7 +239,8 @@ func applyAwakeLocked(change func(*awakeState)) error {
 	awake.onAC = onAC
 	var err error
 	switch want := awakeWanted(st, onAC, awake.pause, now); {
-	case want && !held:
+	case want && (!held || awake.retry != nil):
+		// a failed undo may have put part of the lid back
 		if err := holdLid(&st); err != nil {
 			return err
 		}
@@ -213,11 +248,16 @@ func applyAwakeLocked(change func(*awakeState)) error {
 			undoLid(st)
 			return err
 		}
+		stopRetryLocked()
 		return nil
 	case !want && held:
-		err = undoLid(st)
-		st.LidAC, st.LidDC, st.DisableSleep = "", "", ""
-		held = false
+		if err = undoLid(st); err != nil {
+			retryUndoLocked()
+		} else {
+			stopRetryLocked()
+			st.LidAC, st.LidDC, st.DisableSleep = "", "", ""
+			held = false
+		}
 		// unplugged with the lid closed: whether the Mac sleeps by itself
 		// once disablesleep is off is not known, so it is told to
 		if unplugged {
@@ -267,7 +307,9 @@ func KeepAwake(until int64) error {
 		defer awake.Unlock()
 		if awake.gen == gen {
 			stopTimedLocked()
-			_ = applyAwakeLocked(func(st *awakeState) { st.Until = 0 })
+			if err := applyAwakeLocked(func(st *awakeState) { st.Until = 0 }); err != nil {
+				awakeLog.Errorln("keep awake:", err)
+			}
 		}
 	})
 	return nil

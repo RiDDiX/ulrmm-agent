@@ -419,11 +419,12 @@ func safeJoin(dest, name string) (string, error) {
 	return p, nil
 }
 
-// What Unzip writes at most; the runtimes it unpacks stay far below. Tests
-// lower the size.
-var unzipMax = uint64(pkgExtractMax)
-
-const unzipEntriesMax = 100000
+// What Unzip and ExtractTarGz write at most; the runtimes they unpack stay
+// far below. Tests lower both.
+var (
+	unzipMax        = uint64(pkgExtractMax)
+	unzipEntriesMax = 100000
+)
 
 // Unzip checks the sizes in the headers before it writes; archive/zip fails
 // an entry that holds more than its header says.
@@ -491,13 +492,17 @@ func (a *Agent) ExtractTarGz(path, destDir string) (extractedDir string, err err
 	defer gz.Close()
 
 	tr := tar.NewReader(gz)
-	for {
+	var total uint64
+	for entries := 0; ; entries++ {
 		hdr, err := tr.Next()
 		if err == io.EOF {
 			return extractedDir, nil
 		}
 		if err != nil {
 			return "", err
+		}
+		if entries == unzipEntriesMax {
+			return "", fmt.Errorf("the archive has more than %d entries", unzipEntriesMax)
 		}
 		p, err := safeJoin(destDir, hdr.Name)
 		if err != nil {
@@ -519,9 +524,15 @@ func (a *Agent) ExtractTarGz(path, destDir string) (extractedDir string, err err
 			if err != nil {
 				return "", err
 			}
-			_, err = io.Copy(out, tr)
+			// count what is written, not what the header claims; one byte
+			// past the rest tells an oversized archive from an exact fit
+			n, err := io.Copy(out, io.LimitReader(tr, int64(unzipMax-total)+1))
+			total += uint64(n)
 			if cerr := out.Close(); err == nil {
 				err = cerr
+			}
+			if err == nil && total > unzipMax {
+				err = fmt.Errorf("the archive unpacks to more than %s", ByteCountSI(unzipMax))
 			}
 			if err != nil {
 				return "", err

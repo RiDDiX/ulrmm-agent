@@ -4,9 +4,12 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"io"
 	"reflect"
 	"strings"
 	"testing"
@@ -60,27 +63,24 @@ func TestCmdShellArgv(t *testing.T) {
 	const cmdExe, psExe = `C:\Windows\System32\cmd.exe`, `C:\Program Files\ps.exe`
 	cases := []struct {
 		shell, command string
-		args           []string
 		argv           []string
 		raw            string
 	}{
-		{"cmd", `echo "a b" & dir`, nil, []string{cmdExe}, cmdExe + ` /S /C "echo "a b" & dir"`},
-		{"cmd", `"C:\Program Files\App\a.exe" --name "x y"`, nil, []string{cmdExe}, cmdExe + ` /S /C ""C:\Program Files\App\a.exe" --name "x y""`},
-		{"cmd", "", []string{"ipconfig", "/all"}, []string{cmdExe, "/C", "ipconfig", "/all"}, ""},
-		{"powershell", "Get-Date; 'x'", nil, []string{psExe, "-NonInteractive", "-NoProfile", "Get-Date; 'x'"}, ""},
-		{"powershell", "", []string{"-File", "x.ps1"}, []string{psExe, "-NonInteractive", "-NoProfile", "-File", "x.ps1"}, ""},
+		{"cmd", `echo "a b" & dir`, []string{cmdExe}, cmdExe + ` /S /C "echo "a b" & dir"`},
+		{"cmd", `"C:\Program Files\App\a.exe" --name "x y"`, []string{cmdExe}, cmdExe + ` /S /C ""C:\Program Files\App\a.exe" --name "x y""`},
+		{"powershell", "Get-Date; 'x'", []string{psExe, "-NonInteractive", "-NoProfile", "Get-Date; 'x'"}, ""},
 	}
 	for _, c := range cases {
-		argv, raw, err := cmdShellArgv(c.shell, c.args, c.command, cmdExe, psExe)
+		argv, raw, err := cmdShellArgv(c.shell, c.command, cmdExe, psExe)
 		if err != nil || !reflect.DeepEqual(argv, c.argv) || raw != c.raw {
 			t.Errorf("%s %q: %q %q %v", c.shell, c.command, argv, raw, err)
 		}
 	}
-	if _, raw, _ := cmdShellArgv("cmd", nil, "x", `C:\a b\cmd.exe`, psExe); raw != `"C:\a b\cmd.exe" /S /C "x"` {
+	if _, raw, _ := cmdShellArgv("cmd", "x", `C:\a b\cmd.exe`, psExe); raw != `"C:\a b\cmd.exe" /S /C "x"` {
 		t.Errorf("quoted exe: %q", raw)
 	}
 	for _, sh := range []string{"", "bash", `C:\custom.exe`} {
-		if _, _, err := cmdShellArgv(sh, nil, "x", cmdExe, psExe); err == nil {
+		if _, _, err := cmdShellArgv(sh, "x", cmdExe, psExe); err == nil {
 			t.Errorf("%q accepted", sh)
 		}
 	}
@@ -96,6 +96,45 @@ func TestQuoteCmdArg(t *testing.T) {
 		if got := quoteCmdArg(in); got != want {
 			t.Errorf("%q: %q", in, got)
 		}
+	}
+}
+
+func TestStreamShell(t *testing.T) {
+	var frames []interface{}
+	publish := func(v interface{}) { frames = append(frames, v) }
+	var out, errOut bytes.Buffer
+
+	// no signed-in user: the stream still ends with one done frame
+	noUser := errors.New("no logged in user")
+	code, err := streamShell(publish, &out, &errOut, func(_, errW io.Writer) (int, error) {
+		fmt.Fprint(errW, noUser.Error())
+		return -1, noUser
+	})
+	want := []interface{}{"no logged in user", map[string]interface{}{"done": true, "exit_code": -1}}
+	if code != -1 || err != noUser || !reflect.DeepEqual(frames, want) || errOut.String() != "no logged in user" {
+		t.Fatalf("run-as failure: %d %v %q %q", code, err, frames, errOut.String())
+	}
+
+	frames, out = nil, bytes.Buffer{}
+	code, err = streamShell(publish, &out, &errOut, func(outW, _ io.Writer) (int, error) {
+		io.WriteString(outW, "a\r\nb")
+		return 3, nil
+	})
+	want = []interface{}{"a", "b", map[string]interface{}{"done": true, "exit_code": 3}}
+	if code != 3 || err != nil || !reflect.DeepEqual(frames, want) || out.String() != "a\r\nb" {
+		t.Fatalf("streamed run: %d %v %q %q", code, err, frames, out.String())
+	}
+
+	// not streamed: the plain writers, nothing published
+	frames = nil
+	code, _ = streamShell(nil, &out, &errOut, func(outW, errW io.Writer) (int, error) {
+		if outW != io.Writer(&out) || errW != io.Writer(&errOut) {
+			t.Error("writers wrapped without a stream")
+		}
+		return 0, nil
+	})
+	if code != 0 || frames != nil {
+		t.Fatalf("unstreamed: %d %q", code, frames)
 	}
 }
 
@@ -214,6 +253,10 @@ func TestScriptText(t *testing.T) {
 		{"powershell", "Write-Output 'Grüße'", bom + "Write-Output 'Grüße'"},
 		{"powershell", bom + "x", bom + "x"},
 		{"cmd", "@echo off", "@echo off"},
+		{"cmd", "@echo off\r\necho Grüße > C:\\Größe.txt", "@chcp 65001>nul\r\n@echo off\r\necho Grüße > C:\\Größe.txt"},
+		// a script that switches on its own still does, after the agent's line
+		{"cmd", "chcp 65001\r\necho Grüße", "@chcp 65001>nul\r\nchcp 65001\r\necho Grüße"},
+		{"cmd", "chcp 850\r\necho ok", "chcp 850\r\necho ok"},
 		{"python", "print(1)", "print(1)"},
 		{"nushell", "ls", "ls"},
 		{"deno", "1", "1"},

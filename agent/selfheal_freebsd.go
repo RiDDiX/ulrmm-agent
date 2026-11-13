@@ -32,7 +32,9 @@ func (freebsdHeal) serviceState() (installed, running bool) {
 	if !healFileExists(rcScriptPath()) {
 		return false, false
 	}
-	return rcService("enabled") == nil, rcService("onestatus") == nil
+	_, en := healCmd(time.Minute, "service", rcName(), "enabled")
+	_, st := healCmd(time.Minute, "service", rcName(), "onestatus")
+	return rcServiceState(en, st)
 }
 
 func (f freebsdHeal) ensureService(mainPath string) error {

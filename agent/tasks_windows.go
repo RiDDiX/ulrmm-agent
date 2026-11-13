@@ -117,15 +117,14 @@ func (t SchedTask) trigger() taskmaster.Trigger {
 }
 
 // COM state belongs to the OS thread, so the goroutine stays on one thread.
-// A connect that fails half way leaves the thread locked; it is discarded with
-// the goroutine. Panics of the COM property helpers come back as errors.
+// Panics of the COM property helpers come back as errors.
 func withTaskService(fn func(ts *taskmaster.TaskService) error) (err error) {
 	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	ts, err := taskmaster.Connect()
 	if err != nil {
 		return err
 	}
-	defer runtime.UnlockOSThread()
 	defer ts.Disconnect()
 	defer func() {
 		if r := recover(); r != nil {
@@ -189,26 +188,10 @@ func DeleteSchedTask(name string) error {
 	})
 }
 
-// Tasks directly in the root folder.
-func rootTaskNames(ts *taskmaster.TaskService) ([]string, error) {
-	tasks, err := ts.GetRegisteredTasks()
-	if err != nil {
-		return nil, err
-	}
-	defer tasks.Release()
-	ret := []string{}
-	for _, t := range tasks {
-		if t.Path == `\`+t.Name {
-			ret = append(ret, t.Name)
-		}
-	}
-	return ret, nil
-}
-
 func ListSchedTasks() []string {
 	ret := []string{}
 	_ = withTaskService(func(ts *taskmaster.TaskService) error {
-		names, err := rootTaskNames(ts)
+		names, err := ts.RootTaskNames()
 		if err == nil {
 			ret = names
 		}
@@ -220,7 +203,7 @@ func ListSchedTasks() []string {
 // The agent's own tasks, at uninstall.
 func CleanupSchedTasks() {
 	_ = withTaskService(func(ts *taskmaster.TaskService) error {
-		names, err := rootTaskNames(ts)
+		names, err := ts.RootTaskNames()
 		for _, n := range names {
 			if strings.HasPrefix(n, IdentTaskPrefix) {
 				_ = ts.DeleteTask(`\` + n)

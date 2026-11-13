@@ -4,14 +4,18 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"reflect"
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -316,5 +320,95 @@ func TestRunChecksSystemdContainer(t *testing.T) {
 		if m := got[id]; m == nil || m["status"] != "passing" || m["agent_id"] != "agent1" || m["more_info"] == "" {
 			t.Fatalf("check %v: %v", id, m)
 		}
+	}
+}
+
+func TestRunnerScriptTimeout(t *testing.T) {
+	limit := 540
+	for in, want := range map[int]int{-5: -5, 0: 0, 120: 120, limit: limit, limit + 1: limit, 3600: limit} {
+		if got := runnerScriptTimeout(in); got != want {
+			t.Errorf("runnerScriptTimeout(%d) = %d, want %d", in, got, want)
+		}
+	}
+}
+
+func TestSendCheckResultRetry(t *testing.T) {
+	wait := pkgRetryWait
+	pkgRetryWait = time.Millisecond
+	t.Cleanup(func() { pkgRetryWait = wait })
+	var calls atomic.Int32
+	var answers []int
+	a := apiAgent(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/api/v3/checkrunner/" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		w.WriteHeader(answers[calls.Add(1)-1])
+	})
+	res := CPUMemResult{resultHead: resultHead{CheckID: 3, AgentID: "agent1"}, Pct: 7}
+
+	answers = []int{http.StatusServiceUnavailable, http.StatusOK}
+	a.sendCheckResult(res)
+	if calls.Load() != 2 {
+		t.Fatalf("503 then 200: %d calls", calls.Load())
+	}
+	for _, code := range []int{http.StatusBadRequest, http.StatusInternalServerError, http.StatusGatewayTimeout} {
+		calls.Store(0)
+		answers = []int{code, http.StatusOK}
+		a.sendCheckResult(res)
+		if calls.Load() != 1 {
+			t.Fatalf("%d sent again: %d calls", code, calls.Load())
+		}
+	}
+}
+
+// A result whose answer did not come in time may be stored already.
+func TestSendCheckResultNotRepeatedAfterTimeout(t *testing.T) {
+	wait := pkgRetryWait
+	pkgRetryWait = time.Millisecond
+	t.Cleanup(func() { pkgRetryWait = wait })
+	var calls atomic.Int32
+	a := apiAgent(t, func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		// the server notices the client hanging up only once the body is read
+		io.Copy(io.Discard, r.Body)
+		<-r.Context().Done()
+	})
+	a.rClient.SetTimeout(100 * time.Millisecond)
+	a.sendCheckResult(CPUMemResult{resultHead: resultHead{CheckID: 3, AgentID: "agent1"}, Pct: 7})
+	if calls.Load() != 1 {
+		t.Fatalf("%d calls", calls.Load())
+	}
+}
+
+func TestCheckResultResend(t *testing.T) {
+	refused := &url.Error{Op: "Patch", URL: "https://rmm/", Err: &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}}
+	dns := &url.Error{Op: "Patch", URL: "https://rmm/", Err: &net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{Err: "no such host", Name: "rmm"}}}
+	timeout := &url.Error{Op: "Patch", URL: "https://rmm/", Err: context.DeadlineExceeded}
+	reset := &url.Error{Op: "Patch", URL: "https://rmm/", Err: &net.OpError{Op: "read", Net: "tcp", Err: syscall.ECONNRESET}}
+	for _, c := range []struct {
+		code int
+		err  error
+		want bool
+	}{
+		{0, refused, true}, {0, dns, true}, {0, timeout, false}, {0, reset, false},
+		{502, errors.New("server answered 502"), true}, {503, errors.New("server answered 503"), true},
+		{500, errors.New("server answered 500"), false}, {504, errors.New("server answered 504"), false},
+		{400, errors.New("server answered 400"), false},
+	} {
+		if got := checkResultResend(c.code, c.err); got != c.want {
+			t.Errorf("%d %v: %v, want %v", c.code, c.err, got, c.want)
+		}
+	}
+	// the error the API client gives for a closed port
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+	l.Close()
+	a := testUpdateAgent()
+	_, err = a.newAPIClient("https://"+addr, nil).R().Patch("/api/v3/checkrunner/")
+	if err == nil || !checkResultResend(0, err) {
+		t.Fatalf("closed port: %v", err)
 	}
 }

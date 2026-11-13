@@ -22,7 +22,6 @@ import (
 
 const (
 	pbtAPMSuspend         = 0x4
-	pbtAPMResumeSuspend   = 0x7
 	pbtAPMResumeAutomatic = 0x12
 	deviceNotifyCallback  = 2
 	preShutdownBudget     = 6 * time.Second
@@ -37,6 +36,7 @@ var (
 	// replaced in tests
 	powerAnnounce      = (*Agent).announcePower
 	powerShutdownEvent = shutdownEvent
+	powerResume        = func(a *Agent, nc *nats.Conn) { go a.powerBack(nc) }
 )
 
 // DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS
@@ -129,11 +129,13 @@ func (a *Agent) onPowerEvent(nc *nats.Conn, typ uintptr) {
 			kind, by = k, i
 		}
 		powerAnnounce(a, nc, kind, "os", by, suspendBudget)
-	case pbtAPMResumeSuspend, pbtAPMResumeAutomatic:
+	case pbtAPMResumeAutomatic:
+		// every resume sends this one; PBT_APMRESUMESUSPEND comes on top
+		// when a user woke the machine, so it is not handled
 		// the next sleep needs its own notice; a Fast Startup boot is a
 		// resume, the service never stopped
 		// the cancel also drops the expected-stop marker
-		go a.powerBack(nc)
+		powerResume(a, nc)
 	}
 }
 

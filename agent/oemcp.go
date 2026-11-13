@@ -7,9 +7,6 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
-
-	"golang.org/x/text/encoding"
-	"golang.org/x/text/encoding/charmap"
 )
 
 // decodeLines decodes text that is not UTF-8 line by line. Windows console
@@ -17,7 +14,7 @@ import (
 // one output can hold both. Each line keeps the decoding with the fewest odd
 // runes; on a tie the decoding that fits the whole output best wins, then
 // the first decoder (OEM).
-func decodeLines(s string, decoders []*encoding.Decoder) string {
+func decodeLines(s string, decoders []func(string) (string, error)) string {
 	if len(decoders) == 0 {
 		return s
 	}
@@ -32,7 +29,7 @@ func decodeLines(s string, decoders []*encoding.Decoder) string {
 		outs[i] = make([]string, len(decoders))
 		odd[i] = make([]int, len(decoders))
 		for d, dec := range decoders {
-			out, err := dec.String(line)
+			out, err := dec(line)
 			n := oddRunes(out)
 			if err != nil {
 				out, n = line, len(line)+1
@@ -89,39 +86,3 @@ func oddRunes(s string) int {
 }
 
 func isBox(r rune) bool { return r >= 0x2500 && r <= 0x257f }
-
-func oemCharmap(cp int) *charmap.Charmap {
-	switch cp {
-	case 437:
-		return charmap.CodePage437
-	case 852:
-		return charmap.CodePage852
-	case 855:
-		return charmap.CodePage855
-	case 858:
-		return charmap.CodePage858
-	case 860:
-		return charmap.CodePage860
-	case 862:
-		return charmap.CodePage862
-	case 863:
-		return charmap.CodePage863
-	case 865:
-		return charmap.CodePage865
-	case 866:
-		return charmap.CodePage866
-	case 1250:
-		return charmap.Windows1250
-	case 1251:
-		return charmap.Windows1251
-	case 1252:
-		return charmap.Windows1252
-	case 1253:
-		return charmap.Windows1253
-	case 1254:
-		return charmap.Windows1254
-	case 1257:
-		return charmap.Windows1257
-	}
-	return charmap.CodePage850
-}

@@ -6,10 +6,14 @@ package agent
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -135,34 +139,69 @@ func TestIntegrityUnlistedOrRefused(t *testing.T) {
 	}
 }
 
-func TestCheckIntegrityEverySixHours(t *testing.T) {
+// A failed manifest fetch is retried after integrityRetry, a good one
+// waits the full interval.
+func TestCheckIntegrityRetriesAFailedFetch(t *testing.T) {
 	testEnrollKey(t)
+	var hits, serve atomic.Int32
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		if serve.Load() == 0 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.Write([]byte(`{"jws":"x"}`))
+	}))
+	defer ts.Close()
 	integrityState.Lock()
-	integrityState.at = time.Time{}
+	integrityState.next, integrityState.busy = time.Time{}, false
 	integrityState.Unlock()
 	a := testUpdateAgent()
-	a.BaseURL = "http://127.0.0.1:1" // refused before any request
+	a.Cert, a.BaseURL = writeCA(t, ts), ts.URL
 	now := time.Now()
-	a.checkIntegrity(now)
-	integrityState.Lock()
-	at := integrityState.at
-	integrityState.Unlock()
-	if !at.Equal(now) {
-		t.Fatal("first check not recorded")
+	step := func(at time.Duration, want int32, why string) {
+		t.Helper()
+		a.checkIntegrity(now.Add(at))
+		if got := hits.Load(); got != want {
+			t.Fatalf("%s: %d fetches, want %d", why, got, want)
+		}
 	}
-	a.checkIntegrity(now.Add(time.Hour))
+	step(0, 1, "first check")
+	step(integrityRetry-time.Second, 1, "retried before the retry interval")
+	step(integrityRetry, 2, "no retry after a failed fetch")
+	serve.Store(1)
+	step(2*integrityRetry, 3, "no retry after the second failure")
+	step(2*integrityRetry+integrityEvery-time.Second, 3, "fetched again within the interval after a success")
+	step(2*integrityRetry+integrityEvery, 4, "not fetched after the interval")
+}
+
+// A fetch that panics is recovered by the service guard and retried like a
+// failed one, it does not leave the check switched off.
+func TestCheckIntegrityRetriesAfterAPanic(t *testing.T) {
+	testEnrollKey(t)
 	integrityState.Lock()
-	at = integrityState.at
+	integrityState.next, integrityState.busy = time.Time{}, false
 	integrityState.Unlock()
-	if !at.Equal(now) {
-		t.Fatal("checked again within 6h")
+	fetches := 0
+	integrityFetch = func(*Agent) (string, error) {
+		fetches++
+		if fetches == 1 {
+			panic("transport broke")
+		}
+		return "", errors.New("unreachable")
 	}
-	a.checkIntegrity(now.Add(integrityEvery))
-	integrityState.Lock()
-	at = integrityState.at
-	integrityState.Unlock()
-	if !at.Equal(now.Add(integrityEvery)) {
-		t.Fatal("not checked after 6h")
+	t.Cleanup(func() { integrityFetch = (*Agent).getIntegrityDoc })
+	a := testUpdateAgent()
+	a.BaseURL = "https://api.example.com"
+	now := time.Now()
+	a.guard("checkIntegrity", func() { a.checkIntegrity(now) })
+	a.guard("checkIntegrity", func() { a.checkIntegrity(now.Add(integrityRetry - time.Second)) })
+	if fetches != 1 {
+		t.Fatalf("%d fetches before the retry interval, want 1", fetches)
+	}
+	a.guard("checkIntegrity", func() { a.checkIntegrity(now.Add(integrityRetry)) })
+	if fetches != 2 {
+		t.Fatalf("%d fetches after the retry interval, want 2", fetches)
 	}
 }
 

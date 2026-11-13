@@ -552,7 +552,7 @@ func (a *Agent) RunMigrations() {
 
 // Waits until the new mesh agent reports its node id, at most meshIDWait.
 func (a *Agent) installMesh(meshInstaller, meshExe, proxy string) (string, error) {
-	out, err := CMD(meshInstaller, meshInstallArgs(proxy), 90, false)
+	out, err := CMD(meshInstaller, meshInstallArgs(proxy), 90)
 	if err != nil {
 		fmt.Println(err)
 	} else {
@@ -562,7 +562,7 @@ func (a *Agent) installMesh(meshInstaller, meshExe, proxy string) (string, error
 
 	deadline := time.Now().Add(meshIDWait)
 	for {
-		out, err := CMD(meshExe, []string{"-nodeid"}, 30, false)
+		out, err := CMD(meshExe, []string{"-nodeid"}, 30)
 		id := StripAll(out[0])
 		if err == nil && out[1] == "" && meshNodeIDUsable(id) {
 			return id, nil
@@ -578,7 +578,7 @@ func (a *Agent) installMesh(meshInstaller, meshExe, proxy string) (string, error
 const meshIDWait = 5 * time.Minute
 
 func (a *Agent) getMeshNodeID() (string, error) {
-	out, err := CMD(a.MeshSystemEXE, []string{"-nodeid"}, 10, false)
+	out, err := CMD(a.MeshSystemEXE, []string{"-nodeid"}, 10)
 	if err != nil {
 		return "", err
 	}
@@ -598,12 +598,12 @@ func (a *Agent) NixMeshNodeID() string { return "not implemented" }
 // Reinstalls the mesh agent from the RMM and reports its node id again.
 func (a *Agent) RecoverMesh() {
 	a.Logger.Infoln("Attempting mesh recovery")
-	if _, err := CMD("net", []string{"stop", meshSvcName}, 60, false); err != nil {
+	if _, err := CMD("net", []string{"stop", meshSvcName}, 60); err != nil {
 		a.Logger.Debugln("RecoverMesh(): net stop:", err)
 	}
 	a.ForceKillMesh()
 	a.ReinstallMesh()
-	if _, err := CMD("net", []string{"start", meshSvcName}, 60, false); err != nil {
+	if _, err := CMD("net", []string{"start", meshSvcName}, 60); err != nil {
 		a.Logger.Debugln("RecoverMesh(): net start:", err)
 	}
 	a.SyncMeshNodeID(true)

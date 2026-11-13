@@ -26,7 +26,7 @@ type CmdOptions struct {
 	Args, EnvVars  []string
 	Timeout        time.Duration
 
-	IsScript, IsExecutable, Detached bool
+	IsScript, IsExecutable bool
 
 	// Stream publishes output lines on Nc under CmdID
 	Stream bool
@@ -83,8 +83,8 @@ func (a *Agent) NewCMDOpts() *CmdOptions {
 // line. Modes: IsScript runs Shell with Args, IsExecutable runs Shell with
 // Command as its only argument, otherwise Shell (which may carry leading
 // arguments) gets "-c Command". The child gets its own process group; on
-// timeout the whole group and every descendant is killed and the result has
-// exit code 98.
+// timeout the group and every descendant is killed and the result has exit
+// code 98. A descendant that double-forked away before is not found.
 func (a *Agent) CmdV2(c *CmdOptions) CmdStatus {
 	secs := int(c.Timeout)
 	if secs <= 0 {
@@ -180,7 +180,7 @@ func (a *Agent) buildCmd(ctx context.Context, c *CmdOptions) *exec.Cmd {
 	if len(c.EnvVars) > 0 {
 		cmd.Env = append(os.Environ(), c.EnvVars...)
 	}
-	setProcGroup(cmd, c.Detached)
+	setProcGroup(cmd)
 	if c.user != nil {
 		applyRunAs(cmd, c.user)
 	}
@@ -189,8 +189,7 @@ func (a *Agent) buildCmd(ctx context.Context, c *CmdOptions) *exec.Cmd {
 			return nil
 		}
 		a.Logger.Debugln("Killing process with PID", cmd.Process.Pid)
-		killProcGroup(cmd.Process.Pid)
-		killTree(int32(cmd.Process.Pid))
+		killGroupAndTree(cmd.Process.Pid)
 		return nil
 	}
 	// a killed child can leave a grandchild holding the pipes open

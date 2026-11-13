@@ -92,6 +92,31 @@ func TestStatMountsStale(t *testing.T) {
 	stateMem.Unlock()
 }
 
+func TestShallowMounts(t *testing.T) {
+	var ms []SMount
+	ms = append(ms, SMount{Mount: "/"}, SMount{Mount: "/boot/efi"})
+	for i := 0; len(ms) < 39; i++ {
+		ms = append(ms, SMount{Mount: fmt.Sprintf("/rpool/ROOT/pve-1/data/set%02d", i)})
+	}
+	ms = append(ms, SMount{Mount: "/mnt/tank"})
+	got := shallowMounts(ms, 32)
+	if len(got) != 32 || got[0].Mount != "/" || got[1].Mount != "/boot/efi" || got[31].Mount != "/mnt/tank" {
+		t.Fatalf("kept %v", got)
+	}
+	// ties keep kernel order: the first 29 deep datasets stay, set29 goes
+	for i, m := range got[2:31] {
+		if want := fmt.Sprintf("/rpool/ROOT/pve-1/data/set%02d", i); m.Mount != want {
+			t.Fatalf("slot %d: %s, want %s", i+2, m.Mount, want)
+		}
+	}
+	if !reflect.DeepEqual(shallowMounts(ms[:32], 32), ms[:32]) {
+		t.Fatal("32 mounts changed")
+	}
+	if got := shallowMounts([]SMount{{Mount: `C:\`}, {Mount: `C:\mnt\a`}, {Mount: `D:\`}}, 2); got[0].Mount != `C:\` || got[1].Mount != `D:\` {
+		t.Fatalf("drive letters: %v", got)
+	}
+}
+
 func TestParseMdstat(t *testing.T) {
 	type row struct {
 		name, level, state, health string

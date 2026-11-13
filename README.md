@@ -115,7 +115,8 @@ Before every commit:
 gofmt -l .                                  # must print nothing
 for os in linux darwin windows freebsd; do GOOS=$os go vet ./...; done
 CGO_ENABLED=0 go test ./...
-CGO_ENABLED=1 go test -race -run "Heal|Setup|Restore|Reinstall|Refuses|Accepts|Uninstalled|Service|Hung|Rate|Disabled|SafeJoin" ./agent/
+GOARCH=386 CGO_ENABLED=0 go test ./...
+CGO_ENABLED=1 go test -race ./...
 ```
 
 plus the ten-target build above, and `-version` of the linux/amd64 build must

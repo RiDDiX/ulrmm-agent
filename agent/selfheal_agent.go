@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -98,6 +99,43 @@ func healCmd(timeout time.Duration, name string, args ...string) (string, error)
 		err = nil
 	}
 	return string(out), err
+}
+
+// healExit is the exit status of a command that ran to its end; done is
+// false when it timed out, was killed or could not start.
+func healExit(err error) (code int, done bool) {
+	if err == nil {
+		return 0, true
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && ee.Exited() {
+		return ee.ExitCode(), true
+	}
+	return 0, false
+}
+
+// launchdServiceState reads `launchctl print system/<label>`. Only launchd
+// saying it does not know the job (113) means missing; an answer it cannot
+// read leaves the service alone.
+func launchdServiceState(out string, err error, plist bool) (installed, running bool) {
+	switch code, done := healExit(err); {
+	case done && code == 0:
+		return plist, strings.Contains(out, "state = running")
+	case done && (code == 113 || strings.Contains(out, "Could not find service")):
+		return false, false
+	}
+	return true, true
+}
+
+// rcServiceState reads `service <name> enabled` and `onestatus`: a non-zero
+// exit is no; a query that did not finish leaves the service alone.
+func rcServiceState(enabled, status error) (installed, running bool) {
+	en, ok1 := healExit(enabled)
+	st, ok2 := healExit(status)
+	if !ok1 || !ok2 {
+		return true, true
+	}
+	return en == 0, st == 0
 }
 
 // writeIfChanged avoids reloading service managers when nothing changed.

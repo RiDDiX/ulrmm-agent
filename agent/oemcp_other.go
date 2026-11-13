@@ -5,6 +5,4 @@
 
 package agent
 
-import "golang.org/x/text/encoding"
-
-func legacyDecoders() []*encoding.Decoder { return nil }
+func legacyDecoders() []func(string) (string, error) { return nil }

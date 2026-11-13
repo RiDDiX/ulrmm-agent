@@ -4,17 +4,28 @@
 package agent
 
 import (
+	"errors"
 	"testing"
 
-	"golang.org/x/text/encoding"
+	"golang.org/x/text/encoding/charmap"
 )
 
+// stand-ins for the decoders Windows provides
+func charmapDecoders(pages ...*charmap.Charmap) []func(string) (string, error) {
+	var ds []func(string) (string, error)
+	for _, p := range pages {
+		ds = append(ds, p.NewDecoder().String)
+	}
+	return ds
+}
+
 func TestDecodeLines(t *testing.T) {
-	german := []*encoding.Decoder{oemCharmap(850).NewDecoder(), oemCharmap(1252).NewDecoder()}
-	russian := []*encoding.Decoder{oemCharmap(866).NewDecoder(), oemCharmap(1251).NewDecoder()}
+	german := charmapDecoders(charmap.CodePage850, charmap.Windows1252)
+	russian := charmapDecoders(charmap.CodePage866, charmap.Windows1251)
+	failing := func(string) (string, error) { return "", errors.New("no mapping") }
 	cases := []struct {
 		name     string
-		decoders []*encoding.Decoder
+		decoders []func(string) (string, error)
 		in, want string
 	}{
 		// pnputil writes in the ANSI code page: ö is 0xF6, ÷ in 850
@@ -33,6 +44,9 @@ func TestDecodeLines(t *testing.T) {
 		{"cyrillic oem", russian, "\x8f\xe0\xa8\xa2\xa5\xe2", "Привет"},
 		{"cyrillic ansi", russian, "\xcf\xf0\xe8\xe2\xe5\xf2", "Привет"},
 		{"no decoders", nil, "a\xffb", "a\xffb"},
+		// a decoder that fails loses against one that works, and alone keeps the line
+		{"failing first", append([]func(string) (string, error){failing}, german[1]), "Ger\xe4t\nok\n", "Gerät\nok\n"},
+		{"failing only", []func(string) (string, error){failing}, "a\xffb", "a\xffb"},
 	}
 	for _, c := range cases {
 		if got := decodeLines(c.in, c.decoders); got != c.want {

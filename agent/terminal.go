@@ -311,9 +311,9 @@ func (a *Agent) ResizeTerminalSession(sessionID string, rows, cols int) error {
 	return pty.Setsize(sess.Ptmx, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
 }
 
-// KillTerminalSession kills the shell and everything started in its
-// session (the shell leads its own process group); its waiter then sends
-// done.
+// KillTerminalSession kills the shell and its process group; its waiter
+// then sends done. Background jobs an interactive shell moved to groups of
+// their own are not killed.
 func (a *Agent) KillTerminalSession(sessionID string) error {
 	sess, ok := a.terminalSession(sessionID, false)
 	if !ok {

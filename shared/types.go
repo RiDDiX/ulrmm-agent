@@ -39,45 +39,36 @@ type LocalConfig struct {
 // it always encoded with; decoding matches the server's "checks" since
 // encoding/json compares keys case-insensitively.
 type CheckSet struct {
-	CheckSchedule
 	List []CheckDef `json:"Checks"`
-}
-
-type CheckSchedule struct {
-	AgentNum int `json:"agent"`
-	EverySec int `json:"check_interval"`
 }
 
 // CheckDef is one check. Which fields matter depends on Kind; the rest come
 // over as zero values.
 type CheckDef struct {
-	Script        ScriptBody   `json:"script"`
-	Tasks         []LinkedTask `json:"assigned_tasks"`
-	CheckID       int          `json:"id"`
-	Kind          string       `json:"check_type"`
-	LastStatus    string       `json:"status"`
-	Limit         int          `json:"threshold"`
-	Drive         string       `json:"disk"`
-	Target        string       `json:"ip"`
-	Args          []string     `json:"script_args"`
-	Env           []string     `json:"env_vars"`
-	NuConfig      bool         `json:"nushell_enable_config"`
-	DenoPerms     string       `json:"deno_default_permissions"`
-	TimeoutSec    int          `json:"timeout"`
-	Svc           string       `json:"svc_name"`
-	OKIfStarting  bool         `json:"pass_if_start_pending"`
-	OKIfMissing   bool         `json:"pass_if_svc_not_exist"`
-	Restart       bool         `json:"restart_if_stopped"`
-	Log           string       `json:"log_name"`
-	EventCode     int          `json:"event_id"`
-	AnyEvent      bool         `json:"event_id_is_wildcard"`
-	EventKind     string       `json:"event_type"`
-	EventSrc      string       `json:"event_source"`
-	EventText     string       `json:"event_message"`
-	FailOn        string       `json:"fail_when"`
-	Days          int          `json:"search_last_days"`
-	Container     string       `json:"container"`
-	ContainerKind string       `json:"container_kind"`
+	Script        ScriptBody `json:"script"`
+	CheckID       int        `json:"id"`
+	Kind          string     `json:"check_type"`
+	Limit         int        `json:"threshold"`
+	Drive         string     `json:"disk"`
+	Target        string     `json:"ip"`
+	Args          []string   `json:"script_args"`
+	Env           []string   `json:"env_vars"`
+	NuConfig      bool       `json:"nushell_enable_config"`
+	DenoPerms     string     `json:"deno_default_permissions"`
+	TimeoutSec    int        `json:"timeout"`
+	Svc           string     `json:"svc_name"`
+	OKIfStarting  bool       `json:"pass_if_start_pending"`
+	OKIfMissing   bool       `json:"pass_if_svc_not_exist"`
+	Restart       bool       `json:"restart_if_stopped"`
+	Log           string     `json:"log_name"`
+	EventCode     int        `json:"event_id"`
+	AnyEvent      bool       `json:"event_id_is_wildcard"`
+	EventKind     string     `json:"event_type"`
+	EventSrc      string     `json:"event_source"`
+	EventText     string     `json:"event_message"`
+	Days          int        `json:"search_last_days"`
+	Container     string     `json:"container"`
+	ContainerKind string     `json:"container_kind"`
 }
 
 type ScriptBody struct {
@@ -87,16 +78,8 @@ type ScriptBody struct {
 	Env    []string `json:"env_vars"`
 }
 
-// LinkedTask is a task the server runs when its check fails.
-type LinkedTask struct {
-	TaskID int  `json:"id"`
-	On     bool `json:"enabled"`
-}
-
 type TaskDef struct {
-	TaskID    int        `json:"id"`
 	Steps     []TaskStep `json:"task_actions"`
-	On        bool       `json:"enabled"`
 	KeepGoing bool       `json:"continue_on_error"`
 }
 

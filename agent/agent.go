@@ -176,6 +176,7 @@ func setNixLayout(truenas bool) {
 }
 
 func New(logger *logrus.Logger, version string) *Agent {
+	awakeLog = logger
 	cfg := NewAgentConfig()
 	if err := openConfigSecrets(cfg); err != nil {
 		logger.Errorln("config:", err)
@@ -663,7 +664,7 @@ func (a *Agent) ReinstallMesh() {
 		a.Logger.Errorln("ReinstallMesh(): download answered", r.StatusCode())
 		return
 	}
-	if _, err := CMD(meshBin, []string{"-fulluninstall"}, 30, false); err != nil {
+	if _, err := CMD(meshBin, []string{"-fulluninstall"}, 30); err != nil {
 		a.Logger.Debugln("ReinstallMesh(): -fulluninstall:", err)
 	}
 	time.Sleep(2 * time.Second)

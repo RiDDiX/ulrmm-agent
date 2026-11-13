@@ -58,7 +58,7 @@ SolidCompression=yes
 WizardStyle=modern
 RestartApplications=no
 CloseApplications=no
-MinVersion=6.1
+MinVersion=10.0
 VersionInfoVersion={#MyAppNumVersion}
 VersionInfoProductTextVersion=v{#MyAppVersion}
 VersionInfoOriginalFileName={#MyAppExeName}
@@ -77,7 +77,6 @@ Source: "..\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion;
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent runascurrentuser
 
 [UninstallRun]
-Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN ""{#MyAppSvcName}-selfheal"" /F"; Flags: runhidden; RunOnceId: "selfhealrm";
 Filename: "{app}\{#MyAppExeName}"; Parameters: "-m cleanup"; RunOnceId: "cleanuprm";
 Filename: "{cmd}"; Parameters: "/c taskkill /F /IM {#MyAppExeName}"; RunOnceId: "killagent";
 Filename: "{app}\{#MESHEXE}"; Parameters: "-fulluninstall"; RunOnceId: "meshrm";
@@ -183,7 +182,6 @@ end;
 
 function InitializeUninstall(): Boolean;
 var
-  ResultCode: Integer;
   Stored, Given: String;
 begin
   Stored := StoredUninstallValue('UninstallCode');
@@ -201,12 +199,26 @@ begin
       exit;
     end;
   end;
+  Result := True;
+end;
+
+// After the confirmation, before [UninstallRun] and the file removal, so a
+// cancelled uninstall changes nothing. The self-heal task goes first: while
+// the config is still there it would register a missing service again.
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ResultCode: Integer;
+begin
+  if CurUninstallStep <> usUninstall then
+    exit;
+
+  Exec(ExpandConstant('{sys}\schtasks.exe'), '/End /TN "{#MyAppSvcName}-selfheal"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\schtasks.exe'), '/Delete /TN "{#MyAppSvcName}-selfheal" /F', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Log('delete self-heal task: ' + IntToStr(ResultCode));
 
   Exec('cmd.exe', '/c ping 127.0.0.1 -n 2 && net stop {#MyAppSvcName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec('cmd.exe', '/c taskkill /F /IM {#MyAppExeName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 
   Exec('cmd.exe', '/c sc delete {#MyAppSvcName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Log('delete service: ' + IntToStr(ResultCode));
-
-  Result := True;
 end;

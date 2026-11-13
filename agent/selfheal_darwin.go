@@ -38,8 +38,8 @@ func launchctl(args ...string) error {
 }
 
 func (darwinHeal) serviceState() (installed, running bool) {
-	loaded, running := launchdLoaded(IdentMacPlistLabel)
-	return loaded && healFileExists(macPlistPath), running
+	out, err := healCmd(30*time.Second, "launchctl", "print", "system/"+IdentMacPlistLabel)
+	return launchdServiceState(out, err, healFileExists(macPlistPath))
 }
 
 // Rewrites the LaunchDaemon and loads it fresh.

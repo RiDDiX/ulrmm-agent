@@ -75,15 +75,23 @@ func ConnectWithOptions(serverName, domain, username, password string) (TaskServ
 		}
 	}
 
+	// every failure below must undo initialize, or the COM object and the
+	// apartment reference leak
+	fail := func(err error) (TaskService, error) {
+		taskService.taskServiceObj.Release()
+		ole.CoUninitialize()
+		return TaskService{}, err
+	}
+
 	_, err = oleutil.CallMethod(taskService.taskServiceObj, "Connect", serverName, username, domain, password)
 	if err != nil {
-		return TaskService{}, fmt.Errorf("error connecting to Task Scheduler service: %v", getTaskSchedulerError(err))
+		return fail(fmt.Errorf("error connecting to Task Scheduler service: %v", getTaskSchedulerError(err)))
 	}
 
 	if serverName == "" {
 		serverName, err = os.Hostname()
 		if err != nil {
-			return TaskService{}, err
+			return fail(err)
 		}
 	}
 	if domain == "" {
@@ -92,9 +100,9 @@ func ConnectWithOptions(serverName, domain, username, password string) (TaskServ
 	if username == "" {
 		currentUser, err := user.Current()
 		if err != nil {
-			return TaskService{}, err
+			return fail(err)
 		}
-		username = strings.Split(currentUser.Username, `\`)[1]
+		username = accountName(currentUser.Username)
 	}
 	taskService.connectedDomain = domain
 	taskService.connectedComputerName = serverName
@@ -102,7 +110,7 @@ func ConnectWithOptions(serverName, domain, username, password string) (TaskServ
 
 	res, err := oleutil.CallMethod(taskService.taskServiceObj, "GetFolder", `\`)
 	if err != nil {
-		return TaskService{}, fmt.Errorf("error getting the root folder: %v", getTaskSchedulerError(err))
+		return fail(fmt.Errorf("error getting the root folder: %v", getTaskSchedulerError(err)))
 	}
 	taskService.rootFolderObj = res.ToIDispatch()
 	taskService.isConnected = true
@@ -239,6 +247,33 @@ func (t *TaskService) GetRegisteredTasks() (RegisteredTaskCollection, error) {
 	}
 
 	return registeredTasks, nil
+}
+
+// RootTaskNames returns the names of the tasks directly in the root folder.
+// Only the name of each task is read, so a task whose definition cannot be
+// parsed neither fails the listing nor leaks the tasks read before it.
+func (t *TaskService) RootTaskNames() ([]string, error) {
+	res, err := oleutil.CallMethod(t.rootFolderObj, "GetTasks", int(TASK_ENUM_HIDDEN))
+	if err != nil {
+		return nil, fmt.Errorf("error getting tasks of root folder: %v", getTaskSchedulerError(err))
+	}
+	defer res.Clear()
+	names := []string{}
+	err = oleutil.ForEach(res.ToIDispatch(), func(v *ole.VARIANT) error {
+		defer v.Clear()
+		task := v.ToIDispatch()
+		if task == nil {
+			return nil
+		}
+		name, err := oleutil.GetProperty(task, "Name")
+		if err != nil {
+			return fmt.Errorf("error getting task name: %v", getTaskSchedulerError(err))
+		}
+		defer name.Clear()
+		names = append(names, name.ToString())
+		return nil
+	})
+	return names, err
 }
 
 // GetRegisteredTask attempts to find the specified registered task and returns a
@@ -653,7 +688,7 @@ func (t *TaskService) DeleteTask(path string) error {
 }
 
 func (t *TaskService) registeredTaskExist(path string) bool {
-	_, err := oleutil.CallMethod(t.rootFolderObj, "GetTask", path)
+	res, err := oleutil.CallMethod(t.rootFolderObj, "GetTask", path)
 	if err != nil {
 		if getOLEErrorCode(err) == 0x80070002 {
 			return false
@@ -662,12 +697,13 @@ func (t *TaskService) registeredTaskExist(path string) bool {
 		// so we'll return true
 		return true
 	}
+	res.Clear()
 
 	return true
 }
 
 func (t *TaskService) taskFolderExist(path string) bool {
-	_, err := oleutil.CallMethod(t.taskServiceObj, "GetFolder", path)
+	res, err := oleutil.CallMethod(t.taskServiceObj, "GetFolder", path)
 	if err != nil {
 		if getOLEErrorCode(err) == 0x80070002 {
 			return false
@@ -676,6 +712,7 @@ func (t *TaskService) taskFolderExist(path string) bool {
 		// technically exists, so we'll return true
 		return true
 	}
+	res.Clear()
 
 	return true
 }

@@ -18,11 +18,15 @@ var (
 	regAPI            = windows.NewLazySystemDLL("advapi32.dll")
 	procRegSetValueEx = regAPI.NewProc("RegSetValueExW")
 	procRegRenameKey  = regAPI.NewProc("RegRenameKey")
+	procRegDeleteKey  = regAPI.NewProc("RegDeleteKeyExW")
 )
 
 const (
 	regOpenLink = 0x8 // REG_OPTION_OPEN_LINK: open a link key itself, not its target
 	regReadKey  = registry.ENUMERATE_SUB_KEYS | registry.QUERY_VALUE
+	// the native view also from a 386 build on 64-bit Windows, where SOFTWARE
+	// would otherwise be redirected to WOW6432Node; 32-bit Windows ignores it
+	regView = registry.WOW64_64KEY
 	// regMoveLimit caps what a key move between parents or a value rename
 	// holds in memory.
 	regMoveLimit = 64 << 20
@@ -58,10 +62,23 @@ func regOpenNoFollow(k registry.Key, sub string, access uint32) (registry.Key, e
 		return 0, err
 	}
 	var h windows.Handle
-	if err := windows.RegOpenKeyEx(windows.Handle(k), p, regOpenLink, access, &h); err != nil {
+	if err := windows.RegOpenKeyEx(windows.Handle(k), p, regOpenLink, access|regView, &h); err != nil {
 		return 0, err
 	}
 	return registry.Key(h), nil
+}
+
+// regDeleteKey deletes an empty key in the regView view; registry.DeleteKey
+// cannot choose one.
+func regDeleteKey(root registry.Key, sub string) error {
+	p, err := windows.UTF16PtrFromString(sub)
+	if err != nil {
+		return err
+	}
+	if r, _, _ := procRegDeleteKey.Call(uintptr(root), uintptr(unsafe.Pointer(p)), regView, 0); r != 0 {
+		return syscall.Errno(r)
+	}
+	return nil
 }
 
 func regIsLink(k registry.Key) bool {
@@ -110,7 +127,7 @@ func regSetRaw(k registry.Key, name string, typ uint32, data []byte) error {
 }
 
 func regHasSubkeys(k registry.Key, name string) bool {
-	c, err := registry.OpenKey(k, name, registry.QUERY_VALUE)
+	c, err := registry.OpenKey(k, name, registry.QUERY_VALUE|regView)
 	if err != nil {
 		return false
 	}
@@ -135,7 +152,7 @@ func BrowseRegistry(path string, page, size int) ([]map[string]interface{}, []ma
 	if err != nil {
 		return nil, nil, false, err
 	}
-	k, err := registry.OpenKey(root, sub, regReadKey)
+	k, err := registry.OpenKey(root, sub, regReadKey|regView)
 	if err != nil {
 		return nil, nil, false, fmt.Errorf("failed to open key %s: %v", path, err)
 	}
@@ -181,7 +198,7 @@ func CreateRegistryKey(path string) error {
 	if err != nil {
 		return fmt.Errorf("parsing registry path: %v", err)
 	}
-	k, existed, err := registry.CreateKey(root, sub, registry.QUERY_VALUE)
+	k, existed, err := registry.CreateKey(root, sub, registry.QUERY_VALUE|regView)
 	if err != nil {
 		return fmt.Errorf("failed to create registry key '%s': %v", path, err)
 	}
@@ -228,7 +245,7 @@ func regDeleteTree(root registry.Key, sub, full string) error {
 			return err
 		}
 	}
-	if err := registry.DeleteKey(root, sub); err != nil {
+	if err := regDeleteKey(root, sub); err != nil {
 		return fmt.Errorf("failed to delete registry key %s: %v", full, err)
 	}
 	return nil
@@ -271,7 +288,7 @@ func RenameRegistryKey(oldPath, newPath string) error {
 	src.Close()
 
 	exists := func() error {
-		if k, err := registry.OpenKey(nroot, nsub, registry.QUERY_VALUE); err == nil {
+		if k, err := registry.OpenKey(nroot, nsub, registry.QUERY_VALUE|regView); err == nil {
 			k.Close()
 			return fmt.Errorf("registry key '%s' already exists", newPath)
 		}
@@ -318,7 +335,7 @@ func regMoveTree(oroot registry.Key, osub, oldPath string, nroot registry.Key, n
 	if err != nil {
 		return err
 	}
-	dst, existed, err := registry.CreateKey(nroot, nsub, registry.WRITE)
+	dst, existed, err := registry.CreateKey(nroot, nsub, registry.WRITE|regView)
 	if err != nil {
 		return fmt.Errorf("failed to create registry key '%s': %v", newPath, err)
 	}
@@ -403,7 +420,7 @@ func regWriteTree(dst registry.Key, n *regNode) error {
 		}
 	}
 	for _, c := range n.subs {
-		k, _, err := registry.CreateKey(dst, c.name, registry.WRITE)
+		k, _, err := registry.CreateKey(dst, c.name, registry.WRITE|regView)
 		if err != nil {
 			return fmt.Errorf("failed to create subkey '%s': %v", c.name, err)
 		}
@@ -446,7 +463,7 @@ func regPutValue(path, name, sentType string, data interface{}, create bool) (ma
 	if create {
 		verb, access = "create", registry.SET_VALUE|registry.QUERY_VALUE
 	}
-	k, err := registry.OpenKey(root, sub, access)
+	k, err := registry.OpenKey(root, sub, access|regView)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open key for writing '%s': %v", path, err)
 	}
@@ -475,7 +492,7 @@ func DeleteRegistryValue(path, name string) error {
 	if err != nil {
 		return err
 	}
-	k, err := registry.OpenKey(root, sub, registry.QUERY_VALUE|registry.SET_VALUE)
+	k, err := registry.OpenKey(root, sub, registry.QUERY_VALUE|registry.SET_VALUE|regView)
 	if err != nil {
 		return fmt.Errorf("failed to open key for writing '%s': %v", path, err)
 	}
@@ -514,7 +531,7 @@ func RenameRegistryValue(path, oldName, newName string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	k, err := registry.OpenKey(root, sub, registry.QUERY_VALUE|registry.SET_VALUE)
+	k, err := registry.OpenKey(root, sub, registry.QUERY_VALUE|registry.SET_VALUE|regView)
 	if err != nil {
 		return "", fmt.Errorf("failed to open key for writing '%s': %v", path, err)
 	}

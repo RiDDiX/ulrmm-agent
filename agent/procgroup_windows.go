@@ -9,11 +9,7 @@ import (
 )
 
 // Windows has no process groups to signal; killTree covers the children.
-func setProcGroup(cmd *exec.Cmd, detached bool) {
-	if detached {
-		cmd.SysProcAttr = SetDetached()
-	}
-}
+func setProcGroup(*exec.Cmd) {}
 
 func killProcGroup(int) {}
 
