@@ -42,13 +42,13 @@ func (a *Agent) GetPython(_ bool)                         {}
 func (a *Agent) PatchMgmnt(_ bool) error                  { return nil }
 func (a *Agent) rearmPatchMgmt()                          {}
 func (a *Agent) GetInstalledSoftware() []rmm.InstalledApp { return []rmm.InstalledApp{} }
-func (a *Agent) ChecksRunning() bool                      { return false }
+func (a *Agent) ChecksRunning() bool                      { return checksBusy.Load() }
 func (a *Agent) InstallChoco()                            {}
 func (a *Agent) InstallWithChoco(_ string) (string, error) {
 	return "", nil
 }
-func installWinget(_ context.Context, _ string) (string, string, int, error) {
-	return "", "", -1, errors.New("winget is only available on Windows")
+func installWinget(_ context.Context, _ string) (string, string, int, string, error) {
+	return "", "", -1, "", errors.New("winget is only available on Windows")
 }
 
 func (a *Agent) GetWinUpdates(_ bool)      {}

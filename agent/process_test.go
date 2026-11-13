@@ -4,11 +4,27 @@
 package agent
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/sirupsen/logrus"
 )
+
+func TestDescendantsSkipsReusedParentPID(t *testing.T) {
+	procs := []procEntry{
+		{pid: 4000, ppid: 1, create: 5000},
+		{pid: 4100, ppid: 4000, create: 6000}, // child of 4000
+		{pid: 4200, ppid: 4100, create: 6000}, // grandchild, same ms
+		{pid: 3000, ppid: 4000, create: 1000}, // orphan of an older 4000
+		{pid: 3100, ppid: 3000, create: 2000}, // its child stays out too
+		{pid: 4300, ppid: 4000},               // creation time unknown
+	}
+	got := descendants(4000, procs)
+	if !reflect.DeepEqual(got, []int32{4100, 4300, 4200}) {
+		t.Fatalf("got %v", got)
+	}
+}
 
 func TestParseCPUTime(t *testing.T) {
 	for in, want := range map[string]time.Duration{

@@ -263,18 +263,112 @@ func InstallWithWinget(id string) (string, int64) {
 	defer appUpdatesMu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), wingetInstallMax)
 	defer cancel()
-	stdout, stderr, code, err := installWinget(ctx, id)
+	// one limit for the whole sequence: install, probe, second install
+	stdout, stderr, code, note, err := installWinget(ctx, id)
 	if err != nil && ctx.Err() != nil {
 		err = errors.New(appTimedOutText)
 	}
-	return wingetInstallResult(stdout, stderr, code, err)
+	out, c := wingetInstallResult(stdout, stderr, code, err)
+	if note != "" {
+		out = strings.TrimRight(note+"\n"+out, "\n")
+	}
+	return out, c
 }
 
-// wingetInstallArgs: machine scope, SYSTEM has no profile worth installing
-// into and the retry as the user runs elevated.
-func wingetInstallArgs(id string) []string {
-	return []string{"install", "--id", id, "--exact", "--source", "winget", "--scope", "machine", "--silent",
-		"--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"}
+// wingetInstallArgs: scope "machine" first, SYSTEM has no profile worth
+// installing into and the retry as the user runs elevated; "user" for a
+// per-user installer run as the signed-in user without elevation
+// (wingetUserElevated); "" lets winget choose.
+func wingetInstallArgs(id, scope string) []string {
+	args := []string{"install", "--id", id, "--exact", "--source", "winget"}
+	if scope != "" {
+		args = append(args, "--scope", scope)
+	}
+	return append(args, "--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity")
+}
+
+// wingetUserElevated: a --scope user install needs no admin rights and its
+// installer lands in the user's own %TEMP%, where an unelevated process could
+// swap it after the hash check; only machine-wide runs take the elevated token.
+func wingetUserElevated(args []string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--scope" && args[i+1] == "user" {
+			return false
+		}
+	}
+	return true
+}
+
+// wingetProbeArgs asks which installer winget selects for scope. show exits
+// 0 either way, only its output tells.
+func wingetProbeArgs(id, scope string) []string {
+	return []string{"show", "--id", id, "--exact", "--source", "winget", "--scope", scope,
+		"--accept-source-agreements", "--disable-interactivity"}
+}
+
+// what follows a machine-scope install
+type wingetNext int
+
+const (
+	wingetDone    wingetNext = iota // the first attempt is the result
+	wingetAsUser                    // per-user installer: install as the signed-in user
+	wingetNoUser                    // per-user installer and nobody signed in
+	wingetNoScope                   // installer without a declared scope: again without --scope
+)
+
+const wingetNoUserText = "this package installs per user only, sign a user in on the device and try again"
+
+// an installer's SHA256 in `winget show`; its labels are localised
+var wingetInstallerHashRe = regexp.MustCompile(`\b[0-9A-Fa-f]{64}\b`)
+
+func wingetNoInstallerFound(code int, err error) bool {
+	return err == nil && uint32(code) == wingetNoInstaller
+}
+
+// wingetSecondTry decides after a machine-scope install: only "no applicable
+// installer" gets a second attempt. machine and user are the outputs of
+// wingetProbeArgs for both scopes; a hash in the release notes shows in both,
+// only an installer selected for user scope adds one. Installing a per-user
+// package as SYSTEM would put it into the SYSTEM profile, so without a
+// signed-in user it is not tried.
+func wingetSecondTry(code int, err error, machine, user string, probeErr error, signedIn bool) wingetNext {
+	switch {
+	case !wingetNoInstallerFound(code, err) || probeErr != nil:
+		return wingetDone
+	case len(wingetInstallerHashRe.FindAllString(user, -1)) <= len(wingetInstallerHashRe.FindAllString(machine, -1)):
+		return wingetNoScope
+	case signedIn:
+		return wingetAsUser
+	}
+	return wingetNoUser
+}
+
+// wingetUserNote heads the result of an install as the signed-in user.
+func wingetUserNote(user string, code int, err error) string {
+	done := "tried to install"
+	if err == nil && (code == 0 || uint32(code) == wingetNoUpdate || uint32(code) == wingetAlready || uint32(code) == wingetReboot) {
+		done = "installed"
+	}
+	return done + " for the signed-in user " + user + " because the package has no installer for all users"
+}
+
+// wingetLogLine: verb, package, who ran winget, exit code and duration;
+// never output.
+func wingetLogLine(as string, args []string, d time.Duration, code int, err error) string {
+	what := ""
+	if len(args) > 0 {
+		what = args[0]
+	}
+	for i := 1; i+1 < len(args); i++ {
+		if args[i] == "--id" {
+			what += " " + args[i+1]
+		}
+	}
+	s := fmt.Sprintf("winget %s as %s: exit code 0x%08X after %v", what, as, uint32(code), d.Round(time.Millisecond))
+	if err != nil {
+		s += ", error: " + err.Error()
+	}
+	return s
 }
 
 func wingetInstallResult(stdout, stderr string, code int, err error) (string, int64) {
@@ -289,10 +383,11 @@ func wingetInstallResult(stdout, stderr string, code int, err error) (string, in
 }
 
 var wingetHints = map[uint32]string{
-	0x8A150111:     "an application is in use, close it",
-	0x80072EE2:     "download failed: network or server",
-	0x801901F6:     "download failed: network or server",
-	wingetNoUpdate: "already installed",
+	0x8A150111:        "an application is in use, close it",
+	0x80072EE2:        "download failed: network or server",
+	0x801901F6:        "download failed: network or server",
+	wingetNoUpdate:    "already installed",
+	wingetNoInstaller: "winget found no applicable installer of this package",
 }
 
 // wingetExitText is the exit code line, with a hint on its own line for
@@ -328,13 +423,16 @@ func startsAt(c []rune, j int) bool {
 }
 
 // winget: nothing installed, nothing to upgrade, installed but the reboot
-// finishes it. STATUS_DLL_NOT_FOUND is winget.exe started from its package
-// folder as SYSTEM, which cannot load its framework packages (Windows 11,
-// winget 1.29); it prints nothing.
+// finishes it, already installed, no installer for the scope asked for.
+// STATUS_DLL_NOT_FOUND is winget.exe started from its package folder as
+// SYSTEM, which cannot load its framework packages (Windows 11, winget
+// 1.29); it prints nothing.
 const (
 	wingetNoApps      = 0x8A150014
 	wingetNoUpdate    = 0x8A15002B
 	wingetReboot      = 0x8A150109
+	wingetAlready     = 0x8A150061
+	wingetNoInstaller = 0x8A150010
 	statusDLLNotFound = 0xC0000135
 )
 

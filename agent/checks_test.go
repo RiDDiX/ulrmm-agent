@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"reflect"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -209,6 +210,34 @@ func TestRunChecks(t *testing.T) {
 	status, body = http.StatusOK, "{not json"
 	if err := a.RunChecks(true); err == nil {
 		t.Fatal("bad JSON accepted")
+	}
+}
+
+func TestRunChecksSingleFlight(t *testing.T) {
+	var gets atomic.Int32
+	inside, release := make(chan struct{}), make(chan struct{})
+	a := apiAgent(t, func(w http.ResponseWriter, r *http.Request) {
+		if gets.Add(1) == 1 {
+			close(inside)
+			<-release
+		}
+		io.WriteString(w, `{"agent": 1, "check_interval": 120, "checks": []}`)
+	})
+	done := make(chan error)
+	go func() { done <- a.RunChecks(true) }()
+	<-inside
+	if err := a.RunChecks(false); err != nil || gets.Load() != 1 {
+		t.Fatalf("second run: %v, %d requests", err, gets.Load())
+	}
+	if runtime.GOOS != "windows" && !a.ChecksRunning() {
+		t.Fatal("ChecksRunning false during a run")
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if err := a.RunChecks(true); err != nil || gets.Load() != 2 {
+		t.Fatalf("run after the first: %v, %d requests", err, gets.Load())
 	}
 }
 

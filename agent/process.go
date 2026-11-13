@@ -228,14 +228,17 @@ func parseCPUTime(s string) time.Duration {
 }
 
 type procEntry struct {
-	pid  int32
-	ppid int32
-	name string
-	exe  string
+	pid    int32
+	ppid   int32
+	name   string
+	exe    string
+	create int64 // ms since the epoch, 0 where unknown
 }
 
 // Without details, only pid and ppid; gopsutil starts lsof and ps per
-// process for name and exe on macOS.
+// process for name and exe on macOS. The creation time is read on Windows
+// only: orphans keep the pid of their dead parent there, and that pid can
+// be reused.
 func listProcs(details bool) []procEntry {
 	procs, err := process.Processes()
 	if err != nil {
@@ -249,15 +252,24 @@ func listProcs(details bool) []procEntry {
 			e.name, _ = p.Name()
 			e.exe, _ = p.Exe()
 		}
+		if runtime.GOOS == "windows" {
+			e.create, _ = p.CreateTime()
+		}
 		ret = append(ret, e)
 	}
 	return ret
 }
 
+// A process older than the one its ppid names is an orphan whose parent
+// pid was reused, not a child.
 func descendants(pid int32, procs []procEntry) []int32 {
+	created := make(map[int32]int64, len(procs))
+	for _, p := range procs {
+		created[p.pid] = p.create
+	}
 	children := map[int32][]int32{}
 	for _, p := range procs {
-		if p.pid != p.ppid {
+		if parent := created[p.ppid]; p.pid != p.ppid && (p.create == 0 || p.create >= parent) {
 			children[p.ppid] = append(children[p.ppid], p.pid)
 		}
 	}

@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/fourcorelabs/wintoken"
 	"golang.org/x/sys/windows"
 )
 
@@ -44,7 +45,7 @@ func wingetPath() (string, error) {
 func runWinget(ctx context.Context, wg string, retry func(stdout string, code int, err error) bool, args ...string) (stdout, stderr string, code int, err error) {
 	start := time.Now()
 	stdout, stderr, code, err = runAppWith(ctx, wingetSystemAttr(wg), filepath.Dir(wg), append([]string{wg}, args...)...)
-	logWinget("system", wg, start, code, err)
+	logWinget("system", args, start, code, err)
 	if ctx.Err() == nil && retry(stdout, code, err) {
 		return runWingetAsUser(ctx, wg, args...)
 	}
@@ -57,10 +58,16 @@ func runWinget(ctx context.Context, wg string, retry func(stdout string, code in
 // runWingetAsUser: on Windows 11 the package-folder winget.exe fails as SYSTEM
 // with 0xC0000135, so it runs with the signed-in user's token; getUserToken
 // takes an administrator's elevated linked token, so machine-wide upgrades
-// work. The alias in the user's %LOCALAPPDATA%\Microsoft\WindowsApps starts
-// winget inside its package; without it the package-folder exe is tried.
+// work. A --scope user install gets the session's own unelevated token
+// (wingetUserElevated). The alias in the user's
+// %LOCALAPPDATA%\Microsoft\WindowsApps starts winget inside its package;
+// without it the package-folder exe is tried.
 func runWingetAsUser(ctx context.Context, pkgExe string, args ...string) (stdout, stderr string, code int, err error) {
-	tok, err := getUserToken()
+	userToken := getUserToken
+	if !wingetUserElevated(args) {
+		userToken = func() (*wintoken.Token, error) { return wintoken.GetInteractiveToken(wintoken.TokenPrimary) }
+	}
+	tok, err := userToken()
 	if err != nil {
 		return "", "", -1, errors.New("winget needs a signed-in user on this Windows")
 	}
@@ -81,14 +88,14 @@ func runWingetAsUser(ctx context.Context, pkgExe string, args ...string) (stdout
 	}
 	start := time.Now()
 	stdout, stderr, code, err = runAppWith(ctx, asUser, dir, append([]string{exe}, args...)...)
-	logWinget("user", exe, start, code, err)
+	logWinget("user", args, start, code, err)
 	if aliasH != 0 {
 		windows.CloseHandle(aliasH)
 		// the alias did not start (no exit code): once more with the package exe
 		if err != nil && code == -1 && ctx.Err() == nil {
 			start = time.Now()
 			stdout, stderr, code, err = runAppWith(ctx, asUser, dir, append([]string{pkgExe}, args...)...)
-			logWinget("user", pkgExe, start, code, err)
+			logWinget("user", args, start, code, err)
 		}
 	}
 	if err != nil {
@@ -97,9 +104,10 @@ func runWingetAsUser(ctx context.Context, pkgExe string, args ...string) (stdout
 	return stdout, stderr, code, err
 }
 
-func logWinget(as, exe string, start time.Time, code int, err error) {
+// info level: agent.log keeps a trace of every winget run
+func logWinget(as string, args []string, start time.Time, code int, err error) {
 	if a := frameAgent.Load(); a != nil {
-		a.Logger.Debugf("winget as %s: %s, exit code 0x%08X after %v, error %v", as, exe, uint32(code), time.Since(start).Round(time.Millisecond), err)
+		a.Logger.Info(wingetLogLine(as, args, time.Since(start), code, err))
 	}
 }
 
@@ -192,12 +200,55 @@ func upgradeApps(ctx context.Context, source string, ids []string) ([]AppUpgrade
 	}), nil
 }
 
-func installWinget(ctx context.Context, id string) (stdout, stderr string, code int, err error) {
+// installWinget installs machine-wide; a package without a machine-scope
+// installer gets one more attempt, chosen by wingetSecondTry, so at most two
+// install attempts. note heads the dashboard text.
+func installWinget(ctx context.Context, id string) (stdout, stderr string, code int, note string, err error) {
 	wg, err := wingetPath()
 	if err != nil {
-		return "", "", -1, err
+		return "", "", -1, "", err
 	}
-	return runWinget(ctx, wg, wingetNeedsUser, wingetInstallArgs(id)...)
+	stdout, stderr, code, err = runWinget(ctx, wg, wingetNeedsUser, wingetInstallArgs(id, "machine")...)
+	if !wingetNoInstallerFound(code, err) || ctx.Err() != nil {
+		return stdout, stderr, code, "", err
+	}
+	var inUser string
+	inMachine, _, _, probeErr := runWinget(ctx, wg, wingetNeedsUser, wingetProbeArgs(id, "machine")...)
+	if probeErr == nil {
+		inUser, _, _, probeErr = runWinget(ctx, wg, wingetNeedsUser, wingetProbeArgs(id, "user")...)
+	}
+	if probeErr != nil && ctx.Err() != nil {
+		return stdout, stderr, code, "", ctx.Err()
+	}
+	user := signedInUser()
+	switch wingetSecondTry(code, err, inMachine, inUser, probeErr, user != "") {
+	case wingetAsUser:
+		stdout, stderr, code, err = runWingetAsUser(ctx, wg, wingetInstallArgs(id, "user")...)
+		return stdout, stderr, code, wingetUserNote(user, code, err), err
+	case wingetNoUser:
+		return stdout, stderr, code, wingetNoUserText, err
+	case wingetNoScope:
+		stdout, stderr, code, err = runWinget(ctx, wg, wingetNeedsUser, wingetInstallArgs(id, "")...)
+	}
+	return stdout, stderr, code, "", err
+}
+
+// signedInUser is the account getUserToken would run as, "" when nobody is
+// signed in.
+func signedInUser() string {
+	tok, err := getUserToken()
+	if err != nil {
+		return ""
+	}
+	defer tok.Close()
+	tu, err := tok.Token().GetTokenUser()
+	if err != nil {
+		return "(unknown)"
+	}
+	if name, _, _, err := tu.User.Sid.LookupAccount(""); err == nil {
+		return name
+	}
+	return tu.User.Sid.String()
 }
 
 // wingetSystemAttr puts the VC++ runtime package winget links against on

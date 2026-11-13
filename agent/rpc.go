@@ -464,11 +464,11 @@ func (r *rpcReq) run() {
 		r.reply(a.PublicIP())
 
 	case "runchecks":
+		if a.ChecksRunning() {
+			r.reply("busy")
+			return
+		}
 		if runtime.GOOS == "windows" {
-			if a.ChecksRunning() {
-				r.reply("busy")
-				return
-			}
 			r.reply("ok")
 			if _, err := CMD(a.EXE, []string{"-m", "runchecks"}, 600, false); err != nil {
 				a.Logger.Errorln("RPC RunChecks", err)
@@ -563,6 +563,10 @@ func (r *rpcReq) run() {
 
 	case "terminal_start", "terminal_input", "terminal_resize", "terminal_kill":
 		a.rpcTerminal(r)
+
+	default:
+		// the caller would otherwise wait for its timeout
+		r.reply("unknown request: " + p.Func)
 	}
 }
 

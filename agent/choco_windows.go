@@ -21,7 +21,10 @@ func (a *Agent) InstallChoco() {
 	conf := a.GetCheckInConfFromAPI()
 	url, sha := chocoScriptSource(conf.ChocoInstallUrl, conf.ChocoInstallSha256)
 	installed := false
-	script, err := a.chocoScript(url, sha)
+	script, tmp, err := a.chocoScript(url, sha)
+	if tmp != "" {
+		defer os.Remove(tmp)
+	}
 	if err != nil {
 		a.Logger.Errorln("InstallChoco(): download:", err)
 	} else {
@@ -38,16 +41,17 @@ func (a *Agent) InstallChoco() {
 }
 
 // Pinned copy uses the agent's TLS settings and must match sha. The public
-// script is fetched with the system trust store only.
-func (a *Agent) chocoScript(url, sha string) (string, error) {
+// script is fetched with the system trust store only, kept in tmp as it came
+// and run only when its signature checks out; the caller removes tmp.
+func (a *Agent) chocoScript(url, sha string) (script, tmp string, err error) {
 	if sha != "" {
 		tmp := filepath.Join(a.WinTmpDir, fmt.Sprintf("chocoinstall-%d.ps1", time.Now().UnixNano()))
 		defer os.Remove(tmp)
 		if err := a.fetchFile(url, tmp, sha, 30*time.Second); err != nil {
-			return "", err
+			return "", "", err
 		}
 		b, err := os.ReadFile(tmp)
-		return string(b), err
+		return string(b), "", err
 	}
 	c := resty.New().SetTimeout(30 * time.Second)
 	if a.Proxy != "" {
@@ -57,12 +61,26 @@ func (a *Agent) chocoScript(url, sha string) (string, error) {
 	}
 	r, err := c.R().Get(url)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if r.IsError() {
-		return "", fmt.Errorf("download answered %d", r.StatusCode())
+		return "", "", fmt.Errorf("download answered %d", r.StatusCode())
 	}
-	return r.String(), nil
+	if err := createWinTempDir(); err != nil {
+		return "", "", err
+	}
+	f, err := os.CreateTemp(a.WinTmpDir, "chocoinstall*.ps1")
+	if err != nil {
+		return "", "", err
+	}
+	_, err = f.Write(r.Body())
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return "", f.Name(), err
+	}
+	return chocoSignedRun(f.Name()), f.Name(), nil
 }
 
 // chocoExe prefers the default install location over PATH.

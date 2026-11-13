@@ -36,7 +36,7 @@ func newHTTPConnectDialer(proxy *url.URL) *httpConnectDialer {
 }
 
 func (d *httpConnectDialer) Dial(_, address string) (net.Conn, error) {
-	conn, err := d.dialer.Dial("tcp", d.proxy.Host)
+	conn, err := d.dialer.Dial("tcp", proxyAddr(d.proxy))
 	if err != nil {
 		return nil, err
 	}
@@ -49,6 +49,19 @@ func (d *httpConnectDialer) Dial(_, address string) (net.Conn, error) {
 	}
 	_ = conn.SetDeadline(time.Time{})
 	return &bufferedConn{Conn: conn, r: br}, nil
+}
+
+// proxyAddr is host:port of the proxy; without a port the scheme's default,
+// as http.ProxyURL does for REST.
+func proxyAddr(u *url.URL) string {
+	port := u.Port()
+	if port == "" {
+		port = "80"
+		if u.Scheme == "https" {
+			port = "443"
+		}
+	}
+	return net.JoinHostPort(u.Hostname(), port)
 }
 
 // connect sends CONNECT for address over conn and checks the answer. The

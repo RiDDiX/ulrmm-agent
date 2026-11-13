@@ -1,5 +1,17 @@
 # Agent changelog
 
+## 1.13.11.2026 (2026-11-13)
+
+- winget install: a package without an installer for all users no longer ends with a bare 0x8A150010. A package that installs per user only is installed for the signed-in user with that user's normal rights, and the result says so; without a signed-in user the result says that one has to sign in. A package whose installer declares no scope is installed once more without --scope. One 20 minute limit covers the whole sequence
+- every winget run writes one line to agent.log: verb, package, system or user, exit code and duration
+- Chocolatey: without a pinned script from the server, the public install script only runs when its Chocolatey Software signature is valid
+- tasks report the first step that failed: a step that ends with an exit code and no error output no longer hides behind a later successful step. Tasks that passed only because their last step succeeded now show as failing
+- Linux, macOS, FreeBSD: a check run requested while one is running answers busy instead of running every check twice
+- NATS through an HTTP proxy works when the proxy URL has no port
+- Windows: ending a process no longer takes along processes that only share a reused parent process id
+- downloads of the agent, the updater and the install script are capped at 500 MB; an unknown request is answered at once instead of running into the server's timeout; the terminal session limit holds for simultaneous starts; unpacked archives never carry setuid, setgid or sticky bits
+- CI runs the tests with the race detector
+
 ## 4.08.11.2026 (2026-11-08)
 
 - app updates: every package gets its own 20 minute budget; the call budget only stops further packages from starting, and packages that never started are reported as "not started" (status not_started), not as failed; a package whose budget ran out is reported as "timed out, the installer may still finish; rescan" (status timed_out) so a finished installer is not shown as failed

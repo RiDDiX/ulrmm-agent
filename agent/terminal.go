@@ -140,14 +140,14 @@ func pumpTermOutput(r io.Reader, publish func([]byte) error, touch func()) error
 }
 
 func (a *Agent) StartTerminalSession(sessionID, shell string, nc *nats.Conn) error {
+	// check and insert under one lock: concurrent starts must not pass the cap
 	a.TerminalSessionsMu.Lock()
-	_, exists := a.TerminalSessions[sessionID]
-	count := len(a.TerminalSessions)
-	a.TerminalSessionsMu.Unlock()
-	if exists {
+	if _, exists := a.TerminalSessions[sessionID]; exists {
+		a.TerminalSessionsMu.Unlock()
 		return fmt.Errorf("session already exists: %s", sessionID)
 	}
-	if count >= termMaxSessions {
+	if len(a.TerminalSessions) >= termMaxSessions {
+		a.TerminalSessionsMu.Unlock()
 		return fmt.Errorf("too many terminal sessions on this agent (limit %d)", termMaxSessions)
 	}
 
@@ -158,12 +158,12 @@ func (a *Agent) StartTerminalSession(sessionID, shell string, nc *nats.Conn) err
 	}
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
+		a.TerminalSessionsMu.Unlock()
 		return fmt.Errorf("failed to start PTY: %w", err)
 	}
 
 	sess := &TerminalSession{ID: sessionID, Cmd: cmd, Ptmx: ptmx}
 	sess.touch()
-	a.TerminalSessionsMu.Lock()
 	if a.TerminalSessions == nil {
 		a.TerminalSessions = make(map[string]*TerminalSession)
 	}

@@ -111,6 +111,20 @@ func chocoScriptSource(url, sha string) (string, string) {
 	return chocoScriptURL, ""
 }
 
+// chocoSignedRun is the PowerShell that runs the unpinned install script at
+// path only when its Authenticode signature is valid and Chocolatey Software
+// signed it; nothing of the script runs before that check.
+func chocoSignedRun(path string) string {
+	p := "'" + strings.ReplaceAll(path, "'", "''") + "'"
+	return "$s = Get-AuthenticodeSignature -LiteralPath " + p + "\n" +
+		"if ($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notmatch 'O=\"?Chocolatey Software') {\n" +
+		"  [Console]::Error.WriteLine('the Chocolatey install script carries no valid Chocolatey Software signature: ' + $s.Status)\n" +
+		"  exit 1\n" +
+		"}\n" +
+		"& " + p + "\n" +
+		"exit $LASTEXITCODE\n"
+}
+
 // chocoArgs refuses names choco could read as an option or that are no
 // package id at all.
 func chocoArgs(name string) ([]string, error) {

@@ -40,3 +40,6 @@ jobs:
 
       - name: Test 32-bit
         run: GOARCH=386 CGO_ENABLED=0 go test ./...
+
+      - name: Test with race detector
+        run: CGO_ENABLED=1 go test -race ./...

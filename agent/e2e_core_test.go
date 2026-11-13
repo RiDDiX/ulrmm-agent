@@ -60,6 +60,9 @@ func TestE2ECore(t *testing.T) {
 	if r := request(map[string]interface{}{"func": "ping"}, 2*time.Second); r != "pong" {
 		t.Fatalf("ping: %v", r)
 	}
+	if r := request(map[string]interface{}{"func": "nosuchfunc"}, 2*time.Second); r != "unknown request: nosuchfunc" {
+		t.Fatalf("unknown func: %v", r)
+	}
 	if r := request(map[string]interface{}{"func": "needsreboot"}, 5*time.Second); r != false && r != true {
 		t.Fatalf("needsreboot: %#v", r)
 	}

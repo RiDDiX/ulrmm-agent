@@ -121,6 +121,29 @@ func TestFetchFileErrorStatus(t *testing.T) {
 	}
 }
 
+func TestFetchFileSizeCap(t *testing.T) {
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "0123456789")
+	}))
+	defer ts.Close()
+	old := fetchFileMax
+	defer func() { fetchFileMax = old }()
+	dest := filepath.Join(t.TempDir(), "f")
+	a := testUpdateAgent()
+	a.Cert = writeCA(t, ts)
+	fetchFileMax = 9
+	if err := a.fetchFile(ts.URL, dest, "", time.Minute); err == nil || !strings.Contains(err.Error(), "larger than") {
+		t.Fatalf("10 bytes past a 9 byte cap: %v", err)
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatal("partial file left on disk")
+	}
+	fetchFileMax = 10
+	if err := a.fetchFile(ts.URL, dest, "", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPublicIP(t *testing.T) {
 	answers := map[string]string{}
 	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -230,6 +253,33 @@ func TestUnzipRejectsTraversal(t *testing.T) {
 	}
 }
 
+func TestUnzipDropsSpecialModeBits(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no setuid on Windows")
+	}
+	dir := t.TempDir()
+	zp := filepath.Join(dir, "a.zip")
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	h := &zip.FileHeader{Name: "suid"}
+	h.SetMode(0o755 | os.ModeSetuid | os.ModeSetgid | os.ModeSticky)
+	w, _ := zw.CreateHeader(h)
+	w.Write([]byte("x"))
+	zw.Close()
+	os.WriteFile(zp, buf.Bytes(), 0o600)
+	out := filepath.Join(dir, "out")
+	if err := Unzip(zp, out); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(filepath.Join(out, "suid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := fi.Mode(); m&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 || m.Perm()&0o700 != 0o700 {
+		t.Fatalf("mode %v", m)
+	}
+}
+
 func writeTarGz(t *testing.T, path string, hdrs ...*tar.Header) {
 	t.Helper()
 	var buf bytes.Buffer
@@ -326,6 +376,21 @@ func TestHTTPConnectDialer(t *testing.T) {
 	u, _ = url.Parse("http://" + addr)
 	if _, err := newHTTPConnectDialer(u).Dial("tcp", "nats.example:4222"); err == nil || !strings.Contains(err.Error(), "proxy rejected connection: 407") {
 		t.Fatalf("407: %v", err)
+	}
+}
+
+func TestProxyAddr(t *testing.T) {
+	for in, want := range map[string]string{
+		"http://proxy.corp":          "proxy.corp:80",
+		"https://proxy.corp":         "proxy.corp:443",
+		"http://u:p@proxy.corp:3128": "proxy.corp:3128",
+		"http://[2001:db8::1]":       "[2001:db8::1]:80",
+		"https://[2001:db8::1]:8443": "[2001:db8::1]:8443",
+	} {
+		u, _ := url.Parse(in)
+		if got := proxyAddr(u); got != want {
+			t.Errorf("proxyAddr(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

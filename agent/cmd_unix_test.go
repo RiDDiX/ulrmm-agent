@@ -253,6 +253,16 @@ func TestRunTaskActions(t *testing.T) {
 		t.Fatalf("continue on error: %+v", res)
 	}
 
+	// a script that fails without stderr does not stop the task, but fails it
+	task = rmm.TaskDef{Steps: []rmm.TaskStep{
+		script("silent", "#!/bin/sh\nexit 2"),
+		script("ok", "#!/bin/sh\necho done"),
+	}}
+	res = a.runTaskActions(task)
+	if !strings.HasSuffix(res.Stdout, "done\n") || res.Retcode != 2 {
+		t.Fatalf("silent failure: %+v", res)
+	}
+
 	task = rmm.TaskDef{Steps: []rmm.TaskStep{
 		{Kind: "cmd", Interp: "/bin/sh", Cmd: "echo c; exit 2", TimeoutSec: 10},
 		{Kind: "foo"},

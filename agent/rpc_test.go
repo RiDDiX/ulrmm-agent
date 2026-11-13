@@ -88,6 +88,15 @@ func TestDispatchSurvivesBadMessages(t *testing.T) {
 	}
 }
 
+func TestUnknownFuncIsAnswered(t *testing.T) {
+	p := decodeReq(t, map[string]interface{}{"func": "nosuchfunc"})
+	r := &rpcReq{a: testUpdateAgent(), msg: &nats.Msg{Reply: "_INBOX.x"}, p: p}
+	r.run()
+	if !r.replied {
+		t.Fatal("unknown func left without an answer")
+	}
+}
+
 func TestPanicReplyKeepsShape(t *testing.T) {
 	if m, ok := panicReply("registry_browse").(map[string]interface{}); !ok || m["error"] == "" {
 		t.Fatalf("registry: %#v", panicReply("registry_browse"))

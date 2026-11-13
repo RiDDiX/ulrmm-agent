@@ -381,7 +381,93 @@ func TestAppIDTakesWingetIDs(t *testing.T) {
 func TestWingetInstallArgs(t *testing.T) {
 	want := []string{"install", "--id", "7zip.7zip", "--exact", "--source", "winget", "--scope", "machine", "--silent",
 		"--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"}
-	if got := wingetInstallArgs("7zip.7zip"); !reflect.DeepEqual(got, want) {
+	if got := wingetInstallArgs("7zip.7zip", "machine"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %q", got)
+	}
+	want[7] = "user"
+	if got := wingetInstallArgs("7zip.7zip", "user"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("user: got %q", got)
+	}
+	want = append(want[:6:6], want[8:]...)
+	if got := wingetInstallArgs("7zip.7zip", ""); !reflect.DeepEqual(got, want) {
+		t.Fatalf("no scope: got %q", got)
+	}
+	probe := []string{"show", "--id", "Discord.Discord", "--exact", "--source", "winget", "--scope", "machine",
+		"--accept-source-agreements", "--disable-interactivity"}
+	if got := wingetProbeArgs("Discord.Discord", "machine"); !reflect.DeepEqual(got, probe) {
+		t.Fatalf("machine probe: got %q", got)
+	}
+	probe[7] = "user"
+	if got := wingetProbeArgs("Discord.Discord", "user"); !reflect.DeepEqual(got, probe) {
+		t.Fatalf("user probe: got %q", got)
+	}
+}
+
+// Measured with winget 1.29: Discord has only per-user installers, Audacity
+// declares no scope, so --scope user finds nothing either.
+func TestWingetSecondTry(t *testing.T) {
+	const noInstaller = int(int32(-1978335216)) // 0x8A150010 as Windows hands it over
+	notes := "Versionshinweise: sha256 " + strings.Repeat("c3", 32) + "\n"
+	noneDiscord := "Gefunden Discord [Discord.Discord] Version 1.0.9268\nInstaller:\n  Kein anwendbares Installationsprogramm gefunden.\n"
+	found := "Gefunden Discord [Discord.Discord] Version 1.0.9268\nInstaller:\n  Installer-SHA256: " + strings.Repeat("a1B2", 16) + "\n"
+	none := "Gefunden Audacity [Audacity.Audacity]\nInstaller:\n  Kein anwendbares Installationsprogramm gefunden.\n"
+	cases := []struct {
+		name          string
+		code          int
+		err           error
+		machine, user string
+		probeErr      error
+		signedIn      bool
+		want          wingetNext
+	}{
+		{"installed", 0, nil, "", "", nil, true, wingetDone},
+		{"other failure", int(int32(-1978334959)), nil, noneDiscord, found, nil, true, wingetDone},
+		{"winget did not run", -1, errors.New("winget: time limit reached"), noneDiscord, found, nil, true, wingetDone},
+		{"probe failed", noInstaller, nil, noneDiscord, found, errors.New("time limit reached"), true, wingetDone},
+		{"per user, user signed in", noInstaller, nil, noneDiscord, found, nil, true, wingetAsUser},
+		{"per user, nobody signed in", noInstaller, nil, noneDiscord, found, nil, false, wingetNoUser},
+		{"per user, hash in the notes", noInstaller, nil, notes + noneDiscord, notes + found, nil, true, wingetAsUser},
+		{"no scope declared", noInstaller, nil, none, none, nil, true, wingetNoScope},
+		{"no scope declared, nobody signed in", noInstaller, nil, none, none, nil, false, wingetNoScope},
+		{"no scope declared, hash in the notes", noInstaller, nil, notes + none, notes + none, nil, true, wingetNoScope},
+		{"65 hex digits are no hash", noInstaller, nil, none, "x " + strings.Repeat("a", 65), nil, true, wingetNoScope},
+	}
+	for _, c := range cases {
+		if got := wingetSecondTry(c.code, c.err, c.machine, c.user, c.probeErr, c.signedIn); got != c.want {
+			t.Errorf("%s: got %d, want %d", c.name, got, c.want)
+		}
+	}
+	if out, code := wingetInstallResult("No applicable installer found", "", noInstaller, nil); code != 0x8A150010 ||
+		!strings.HasSuffix(out, "exit code 0x8A150010\n"+wingetHints[0x8A150010]) {
+		t.Fatalf("hint: %q %d", out, code)
+	}
+	if n := wingetUserNote("riddix", 0, nil); n != "installed for the signed-in user riddix because the package has no installer for all users" {
+		t.Fatalf("note: %q", n)
+	}
+	if n := wingetUserNote("riddix", 1, nil); !strings.HasPrefix(n, "tried to install for the signed-in user riddix") {
+		t.Fatalf("failed note: %q", n)
+	}
+}
+
+func TestWingetUserElevated(t *testing.T) {
+	if wingetUserElevated(wingetInstallArgs("Discord.Discord", "user")) {
+		t.Fatal("--scope user install runs elevated")
+	}
+	if !wingetUserElevated(wingetInstallArgs("7zip.7zip", "machine")) || !wingetUserElevated(wingetInstallArgs("7zip.7zip", "")) {
+		t.Fatal("machine-wide install not elevated")
+	}
+	if !wingetUserElevated([]string{"upgrade", "--id", "7zip.7zip", "--exact"}) {
+		t.Fatal("upgrade not elevated")
+	}
+}
+
+func TestWingetLogLine(t *testing.T) {
+	got := wingetLogLine("user", wingetInstallArgs("Discord.Discord", "user"), 1500*time.Millisecond, 0, nil)
+	if got != "winget install Discord.Discord as user: exit code 0x00000000 after 1.5s" {
+		t.Fatalf("got %q", got)
+	}
+	got = wingetLogLine("system", []string{"upgrade", "--include-unknown"}, time.Second, int(int32(-1978335212)), errors.New("time limit reached"))
+	if got != "winget upgrade as system: exit code 0x8A150014 after 1s, error: time limit reached" {
 		t.Fatalf("got %q", got)
 	}
 }

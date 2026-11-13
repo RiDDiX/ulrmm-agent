@@ -467,7 +467,8 @@ func unzipEntry(f *zip.File, dest string) error {
 		return err
 	}
 	defer rc.Close()
-	return writeAll(target, rc, f.Mode())
+	// permission bits only: no setuid, setgid or sticky from an archive
+	return writeAll(target, rc, f.Mode().Perm())
 }
 
 // ExtractTarGz unpacks directories and regular files only and returns the

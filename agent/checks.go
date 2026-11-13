@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	rmm "git.riddix.de/RiDDiX/ulrmm-agent/shared"
@@ -71,9 +72,17 @@ type HealthCheckResult struct {
 	Health *Health `json:"health"`
 }
 
+// checksBusy: a run in this process; the runchecks rpc and the CheckRunner
+// loop would otherwise run every check twice at the same time.
+var checksBusy atomic.Bool
+
 // RunChecks runs all checks (force) or only the ones the server says are
-// due.
+// due. A call while a run is going returns nil without running anything.
 func (a *Agent) RunChecks(force bool) error {
+	if !checksBusy.CompareAndSwap(false, true) {
+		return nil
+	}
+	defer checksBusy.Store(false)
 	endpoint := "checkrunner"
 	if force {
 		endpoint = "runchecks"
@@ -395,9 +404,9 @@ func (a *Agent) RunTask(id int, jitter bool) error {
 	return nil
 }
 
-// With KeepGoing a failed step still fails the task: the server judges a
-// run by its retcode alone, so the first non-zero code is kept when a later
-// step ends with 0.
+// A failed step still fails the task, also one that only set an exit code:
+// the server judges a run by its retcode alone, so the task reports the
+// first non-zero code.
 func (a *Agent) runTaskActions(task rmm.TaskDef) taskResult {
 	var res taskResult
 	start := time.Now()
@@ -441,7 +450,7 @@ func (a *Agent) runTaskActions(task rmm.TaskDef) taskResult {
 			break
 		}
 	}
-	if task.KeepGoing && res.Retcode == 0 {
+	if failed != 0 {
 		res.Retcode = failed
 	}
 	res.Stdout, res.Stderr = stdoutAll.text(), stderrAll.text()

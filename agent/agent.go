@@ -452,6 +452,10 @@ func pythonForWindows(major, minor int) string {
 	}
 }
 
+// fetchFileMax: agent binaries, the Windows setup and the choco script are
+// tens of MB at most; a larger answer must not fill the disk.
+var fetchFileMax int64 = 500_000_000
+
 // No agent token (the file host is not the API). With wantSha256 set the file
 // must match; whatever fails, dest is gone afterwards.
 func (a *Agent) fetchFile(link, dest, wantSha256 string, timeout time.Duration) (err error) {
@@ -478,7 +482,10 @@ func (a *Agent) fetchFile(link, dest, wantSha256 string, timeout time.Duration) 
 	if err != nil {
 		return err
 	}
-	_, err = io.Copy(f, resp.Body)
+	n, err := io.Copy(f, io.LimitReader(resp.Body, fetchFileMax+1))
+	if err == nil && n > fetchFileMax {
+		err = fmt.Errorf("the download is larger than %s", ByteCountSI(uint64(fetchFileMax)))
+	}
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}

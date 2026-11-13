@@ -125,6 +125,17 @@ func TestChocoScriptSource(t *testing.T) {
 	}
 }
 
+// The unpinned script runs only after its signature check, by its own path.
+func TestChocoSignedRun(t *testing.T) {
+	s := chocoSignedRun(`C:\ProgramData\T'mp\chocoinstall1.ps1`)
+	check := strings.Index(s, `Get-AuthenticodeSignature -LiteralPath 'C:\ProgramData\T''mp\chocoinstall1.ps1'`)
+	run := strings.Index(s, `& 'C:\ProgramData\T''mp\chocoinstall1.ps1'`)
+	if check < 0 || run < check || !strings.Contains(s[check:run], "exit 1") ||
+		!strings.Contains(s, `$s.Status -ne 'Valid'`) || !strings.Contains(s, "Chocolatey Software") {
+		t.Fatalf("script:\n%s", s)
+	}
+}
+
 func TestChocoArgs(t *testing.T) {
 	args, err := chocoArgs("notepadplusplus.install")
 	want := []string{"install", "notepadplusplus.install", "--yes", "--force", "--force-dependencies", "--no-progress"}
