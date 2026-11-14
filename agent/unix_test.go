@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -688,6 +689,37 @@ func TestUnixStubReplies(t *testing.T) {
 		b, err := encodeMsgpack(v)
 		if err != nil || len(b) != 1 || b[0] != 0x90 {
 			t.Fatalf("%s is not an empty list: %x %v", name, b, err)
+		}
+	}
+}
+
+func TestMeshRecoverErr(t *testing.T) {
+	for _, tc := range []struct{ goos, cmd, svc string }{
+		{"linux", "systemctl", nixMeshUnit},
+		{"darwin", "launchctl", launchDaemonsDir + "/meshagent.plist"},
+		{"freebsd", "service", freebsdMeshRc},
+	} {
+		if argv, svc := meshRestartCmd(tc.goos); len(argv) == 0 || argv[0] != tc.cmd || svc != tc.svc {
+			t.Errorf("%s: argv %v svc %q", tc.goos, argv, svc)
+		}
+	}
+	failed := errors.New("exit status 5")
+	for _, tc := range []struct {
+		bin     bool
+		restart error
+		svc     bool
+		want    string
+	}{
+		{true, nil, true, "ok"},
+		{true, nil, false, "ok"},
+		{true, failed, true, "restart mesh agent: exit status 5"},
+		{true, failed, false, "mesh agent not installed, the agent cannot reinstall it on linux"},
+		{false, nil, true, "mesh agent not installed, the agent cannot reinstall it on linux"},
+		{false, nil, false, "mesh agent not installed, the agent cannot reinstall it on linux"},
+	} {
+		got := errOK(meshRecoverErr("linux", tc.bin, tc.restart, tc.svc))
+		if got != tc.want {
+			t.Errorf("bin %v restart %v svc %v: %q", tc.bin, tc.restart, tc.svc, got)
 		}
 	}
 }

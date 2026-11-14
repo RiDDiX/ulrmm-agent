@@ -24,7 +24,7 @@
   !define MyAppName "UniversalLocal RMM Agent"
 !endif
 !ifndef MyAppVersion
-  !define MyAppVersion "2.14.11.2026"
+  !define MyAppVersion "3.14.11.2026"
 !endif
 ; file version is four numbers max: YYYY.M.D.X
 !ifndef MyAppNumVersion

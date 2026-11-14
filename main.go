@@ -21,7 +21,7 @@ import (
 
 var (
 	// the server build reads this line: keep it `version = "X.DD.MM.YYYY"`
-	version = "2.14.11.2026"
+	version = "3.14.11.2026"
 	log     = logrus.New()
 )
 
@@ -130,7 +130,7 @@ func main() {
 		"software":       a.SendSoftware,
 		"cleanup":        a.UninstallCleanup,
 		"runmigrations":  a.RunMigrations,
-		"recovermesh":    a.RecoverMesh,
+		"recovermesh":    func() { _ = a.RecoverMesh() },
 		"macventurafix":  a.FixVenturaMesh,
 		"selfheal":       a.RunSelfHeal,
 		"getpython":      func() { a.GetPython(true) },

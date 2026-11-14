@@ -5,6 +5,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"sync"
@@ -369,5 +370,19 @@ func TestRunBoundedBusy(t *testing.T) {
 	}
 	if !ran || busy {
 		t.Fatalf("freed slot: ran %v busy %v", ran, busy)
+	}
+}
+
+func TestErrOK(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{nil, "ok"},
+		{errors.New("mesh agent not installed, the agent cannot reinstall it on linux"), "mesh agent not installed, the agent cannot reinstall it on linux"},
+	} {
+		if got := errOK(tc.err); got != tc.want {
+			t.Errorf("errOK(%v) = %q", tc.err, got)
+		}
 	}
 }

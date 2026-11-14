@@ -402,10 +402,11 @@ func (r *rpcReq) run() {
 		}
 
 	case "recover":
+		var err error
 		if p.Data["mode"] == "mesh" {
-			a.RecoverMesh()
+			err = a.RecoverMesh()
 		}
-		r.reply("ok")
+		r.reply(errOK(err))
 
 	case "softwarelist":
 		r.reply(a.GetInstalledSoftware())

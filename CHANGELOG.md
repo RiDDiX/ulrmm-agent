@@ -1,5 +1,10 @@
 # Agent changelog
 
+## 3.14.11.2026 (2026-11-14)
+
+- Mesh repair reports to the server whether it worked, and the reason when it did not
+- Linux, macOS, FreeBSD: Mesh repair reports a missing Mesh agent instead of success
+
 ## 2.14.11.2026 (2026-11-14)
 
 - check results carry an id that stays the same when the result is sent again, so the server stores a resent result only once. A result is sent again after a timeout, a connection error or a server error (5xx), up to four tries; after any other error answer it is sent once and logged

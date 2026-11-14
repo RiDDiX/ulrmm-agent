@@ -890,19 +890,48 @@ func meshNodeIDReady(out string) bool {
 	return out != "" && !strings.Contains(l, "graphical version") && !strings.Contains(l, "zenity")
 }
 
-func (a *Agent) RecoverMesh() {
+func (a *Agent) RecoverMesh() error {
 	a.Logger.Infoln("Attempting mesh recovery")
-	argv := []string{"systemctl", "restart", "meshagent.service"}
-	switch runtime.GOOS {
+	argv, svc := meshRestartCmd(runtime.GOOS)
+	bin := healFileExists(a.MeshSystemEXE)
+	var rerr error
+	if bin {
+		var out string
+		if out, rerr = healCmd(time.Minute, argv[0], argv[1:]...); rerr != nil {
+			a.Logger.Errorln("RecoverMesh():", rerr, strings.TrimSpace(out))
+		}
+		a.SyncMeshNodeID(true)
+	}
+	err := meshRecoverErr(runtime.GOOS, bin, rerr, healFileExists(svc))
+	if err != nil {
+		a.Logger.Errorln("RecoverMesh():", err)
+	}
+	return err
+}
+
+// the restart command and the service file the mesh installer writes
+func meshRestartCmd(goos string) ([]string, string) {
+	switch goos {
 	case "darwin":
-		argv = []string{"launchctl", "kickstart", "-k", "system/meshagent"}
+		return []string{"launchctl", "kickstart", "-k", "system/meshagent"}, launchDaemonsDir + "/meshagent.plist"
 	case "freebsd":
-		argv = []string{"service", "meshagent", "onerestart"}
+		return []string{"service", "meshagent", "onerestart"}, freebsdMeshRc
 	}
-	if out, err := healCmd(time.Minute, argv[0], argv[1:]...); err != nil {
-		a.Logger.Errorln("RecoverMesh():", err, strings.TrimSpace(out))
+	return []string{"systemctl", "restart", "meshagent.service"}, nixMeshUnit
+}
+
+// A unit outside the known path still gets its restart; only a failed one
+// without the service file counts as missing. A missing mesh agent stays an
+// error: its download needs an installer token, which an enrolled agent no
+// longer has.
+func meshRecoverErr(goos string, bin bool, restartErr error, svc bool) error {
+	switch {
+	case bin && restartErr == nil:
+		return nil
+	case !bin || !svc:
+		return fmt.Errorf("mesh agent not installed, the agent cannot reinstall it on %s", goos)
 	}
-	a.SyncMeshNodeID(true)
+	return fmt.Errorf("restart mesh agent: %w", restartErr)
 }
 
 // Arms Wake-on-LAN where the system allows it, then sleeps.

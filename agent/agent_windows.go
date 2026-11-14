@@ -692,17 +692,19 @@ func (a *Agent) getMeshNodeID() (string, error) {
 func (a *Agent) NixMeshNodeID() string { return "not implemented" }
 
 // Reinstalls the mesh agent from the RMM and reports its node id again.
-func (a *Agent) RecoverMesh() {
+func (a *Agent) RecoverMesh() error {
 	a.Logger.Infoln("Attempting mesh recovery")
 	if _, err := CMD("net", []string{"stop", meshSvcName}, 60); err != nil {
 		a.Logger.Debugln("RecoverMesh(): net stop:", err)
 	}
 	a.ForceKillMesh()
-	a.ReinstallMesh()
-	if _, err := CMD("net", []string{"start", meshSvcName}, 60); err != nil {
-		a.Logger.Debugln("RecoverMesh(): net start:", err)
+	err := a.ReinstallMesh()
+	// the fresh install has started the service already; net start fails then
+	if _, serr := CMD("net", []string{"start", meshSvcName}, 60); serr != nil {
+		a.Logger.Debugln("RecoverMesh(): net start:", serr)
 	}
 	a.SyncMeshNodeID(true)
+	return err
 }
 
 // the service start and the installpython RPC share PyBaseDir.new/.old

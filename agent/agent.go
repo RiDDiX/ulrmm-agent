@@ -653,16 +653,16 @@ func (a *Agent) ForceKillMesh() {
 }
 
 // Fetches the mesh installer from the server and installs from scratch (Windows recovery).
-func (a *Agent) ReinstallMesh() {
+func (a *Agent) ReinstallMesh() error {
 	meshBin := filepath.Join(a.ProgramDir, a.MeshInstaller)
 	r, err := a.rClient.R().SetOutput(meshBin).Get(fmt.Sprintf("/api/v3/%s/meshreinstall/", a.AgentID))
 	if err != nil {
 		a.Logger.Errorln("ReinstallMesh(): download:", err)
-		return
+		return fmt.Errorf("download mesh agent: %w", err)
 	}
 	if r.IsError() {
 		a.Logger.Errorln("ReinstallMesh(): download answered", r.StatusCode())
-		return
+		return fmt.Errorf("download mesh agent: server answered %d", r.StatusCode())
 	}
 	if _, err := CMD(meshBin, []string{"-fulluninstall"}, 30); err != nil {
 		a.Logger.Debugln("ReinstallMesh(): -fulluninstall:", err)
@@ -676,7 +676,9 @@ func (a *Agent) ReinstallMesh() {
 	time.Sleep(time.Second)
 	if _, err := a.installMesh(meshBin, a.MeshSystemEXE, a.Proxy); err != nil {
 		a.Logger.Errorln("ReinstallMesh(): install:", err)
+		return fmt.Errorf("install mesh agent: %w", err)
 	}
+	return nil
 }
 
 func (a *Agent) CleanupAgentUpdates() {
