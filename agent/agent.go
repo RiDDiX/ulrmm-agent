@@ -717,6 +717,23 @@ func (a *Agent) CleanupAgentUpdates() {
 	}
 }
 
+// legacyDefenderExclusion is the process exclusion the earlier PowerShell
+// bootstrap added for the setup's temporary copy of the agent. Nothing runs
+// from there any more and the directory is writable by users.
+func legacyDefenderExclusion() string { return `C:\Windows\Temp\is-*.tmp\` + IdentArtifact + `*` }
+
+// legacyDefenderExclusions picks that one entry out of Defender's process
+// exclusions, spelled as stored. Any other exclusion is left alone.
+func legacyDefenderExclusions(names []string) []string {
+	var found []string
+	for _, n := range names {
+		if strings.EqualFold(n, legacyDefenderExclusion()) {
+			found = append(found, n)
+		}
+	}
+	return found
+}
+
 // The setup's uninstaller in the program dir.
 func (a *Agent) GetUninstallExe() string {
 	matches, _ := filepath.Glob(filepath.Join(a.ProgramDir, "unins*.exe"))

@@ -24,7 +24,7 @@
   !define MyAppName "UniversalLocal RMM Agent"
 !endif
 !ifndef MyAppVersion
-  !define MyAppVersion "1.14.11.2026"
+  !define MyAppVersion "2.14.11.2026"
 !endif
 ; file version is four numbers max: YYYY.M.D.X
 !ifndef MyAppNumVersion
@@ -413,9 +413,16 @@ Section "Agent" SecAgent
   WriteRegStr HKLM "${UNINST_KEY}" "DisplayName" `${MyAppName}`
   WriteRegStr HKLM "${UNINST_KEY}" "DisplayVersion" "v${MyAppVersion}"
   WriteRegStr HKLM "${UNINST_KEY}" "Publisher" `${MyAppPublisher}`
+!if `${MyAppURL}` == ``
+  ; no URL: links an earlier setup wrote would point to the old address
+  DeleteRegValue HKLM "${UNINST_KEY}" "URLInfoAbout"
+  DeleteRegValue HKLM "${UNINST_KEY}" "HelpLink"
+  DeleteRegValue HKLM "${UNINST_KEY}" "URLUpdateInfo"
+!else
   WriteRegStr HKLM "${UNINST_KEY}" "URLInfoAbout" `${MyAppURL}`
   WriteRegStr HKLM "${UNINST_KEY}" "HelpLink" `${MyAppURL}`
   WriteRegStr HKLM "${UNINST_KEY}" "URLUpdateInfo" `${MyAppURL}`
+!endif
   WriteRegStr HKLM "${UNINST_KEY}" "DisplayIcon" "$INSTDIR\${MyAppExeName}"
   WriteRegStr HKLM "${UNINST_KEY}" "InstallLocation" "$INSTDIR\"
   WriteRegStr HKLM "${UNINST_KEY}" "UninstallString" `"$INSTDIR\${UNINST_EXE}"`

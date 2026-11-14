@@ -612,14 +612,8 @@ func (a *Agent) pkgPatch(ctx context.Context, job string, body interface{}) (int
 }
 
 // patchWithRetry sends a final result: four tries, wait apart, none more
-// after a 4xx.
+// after a 4xx. A transport error (code 0) or a 5xx is tried again.
 func (a *Agent) patchWithRetry(path string, body interface{}, wait time.Duration) error {
-	return a.patchRetrying(path, body, wait, func(code int, _ error) bool { return code < 400 || code >= 500 })
-}
-
-// patchRetrying is patchWithRetry with the rule which failed try (status, 0
-// when the server was not reached) may be repeated.
-func (a *Agent) patchRetrying(path string, body interface{}, wait time.Duration, again func(code int, err error) bool) error {
 	for try := 1; ; try++ {
 		code := 0
 		r, err := a.rClient.R().SetBody(body).Patch(path)
@@ -628,7 +622,7 @@ func (a *Agent) patchRetrying(path string, body interface{}, wait time.Duration,
 				err = fmt.Errorf("server answered %d", code)
 			}
 		}
-		if err == nil || try == 4 || !again(code, err) {
+		if err == nil || try == 4 || (code >= 400 && code < 500) {
 			return err
 		}
 		a.Logger.Debugln("PATCH", path, err)

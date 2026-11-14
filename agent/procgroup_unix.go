@@ -24,6 +24,19 @@ func killProcGroup(pid int) {
 	}
 }
 
+// hangUpOutsideGroup sends SIGHUP to each of pids that is not in process
+// group pgid, as a shell does to its jobs when its terminal hangs up.
+func hangUpOutsideGroup(pgid int, pids []int32) {
+	for _, pid := range pids {
+		if protectedPID(pid) {
+			continue
+		}
+		if g, err := syscall.Getpgid(int(pid)); err == nil && g != pgid {
+			_ = syscall.Kill(int(pid), syscall.SIGHUP)
+		}
+	}
+}
+
 // Drops the child to u, with u's home and identity in its environment.
 // Call after setProcGroup.
 func applyRunAs(cmd *exec.Cmd, u *runAs) {

@@ -4,13 +4,14 @@
 package agent
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	mrand "math/rand"
-	"net"
-	"net/http"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -21,14 +22,21 @@ import (
 )
 
 // Check results go to PATCH /api/v3/checkrunner/ as JSON. Each one starts
-// with resultHead; the server drops a result that lacks agent_id.
+// with resultHead; the server drops a result that lacks agent_id. ResultID
+// stays the same for every resend of one result, so the server applies a
+// result whose answer was lost only once.
 
 type resultHead struct {
-	CheckID int    `json:"id"`
-	AgentID string `json:"agent_id"`
+	CheckID  int    `json:"id"`
+	AgentID  string `json:"agent_id"`
+	ResultID string `json:"result_id"`
 }
 
-func (a *Agent) checkHead(c rmm.CheckDef) resultHead { return resultHead{c.CheckID, a.AgentID} }
+func (a *Agent) checkHead(c rmm.CheckDef) resultHead {
+	id := make([]byte, 16)
+	rand.Read(id)
+	return resultHead{CheckID: c.CheckID, AgentID: a.AgentID, ResultID: hex.EncodeToString(id)}
+}
 
 type DiskCheckResult struct {
 	resultHead
@@ -85,6 +93,20 @@ func (a *Agent) RunChecks(force bool) error {
 		return nil
 	}
 	defer checksBusy.Store(false)
+	// on Windows this is the runner child, which the service only kills at
+	// the ceiling: it ends itself, and what it started, at its own deadline,
+	// the budget until the checks are fetched
+	var deadline *time.Timer
+	var deadlineSecs atomic.Int64
+	if runtime.GOOS == "windows" {
+		deadlineSecs.Store(checkRunnerBudget)
+		deadline = time.AfterFunc(checkRunnerBudget*time.Second, func() {
+			a.Logger.Errorf("RunChecks(): checks still running at the %d s deadline, ending the run", deadlineSecs.Load())
+			killTree(int32(os.Getpid()))
+			os.Exit(1)
+		})
+		defer deadline.Stop()
+	}
 	endpoint := "checkrunner"
 	if force {
 		endpoint = "runchecks"
@@ -100,6 +122,11 @@ func (a *Agent) RunChecks(force bool) error {
 	var data rmm.CheckSet
 	if err := json.Unmarshal(r.Body(), &data); err != nil {
 		return err
+	}
+	if deadline != nil {
+		secs := runnerDeadline(data.List)
+		deadlineSecs.Store(int64(secs))
+		deadline.Reset(time.Duration(secs) * time.Second)
 	}
 
 	var wg sync.WaitGroup
@@ -171,21 +198,9 @@ func (a *Agent) RunChecks(force bool) error {
 }
 
 func (a *Agent) sendCheckResult(payload interface{}) {
-	if err := a.patchRetrying("/api/v3/checkrunner/", payload, pkgRetryWait, checkResultResend); err != nil {
+	if err := a.patchWithRetry("/api/v3/checkrunner/", payload, pkgRetryWait); err != nil {
 		a.Logger.Debugln("check result:", err)
 	}
-}
-
-// checkResultResend: the server stores every check result it gets (history
-// row, average sample, linked tasks), so a result is sent again only when it
-// provably did not reach the server: the connection failed, or the proxy
-// answered 502/503 for the application.
-func checkResultResend(code int, err error) bool {
-	if code == http.StatusBadGateway || code == http.StatusServiceUnavailable {
-		return true
-	}
-	var op *net.OpError
-	return code == 0 && errors.As(err, &op) && (op.Op == "dial" || op.Op == "proxyconnect")
 }
 
 func (a *Agent) DiskCheck(c rmm.CheckDef) DiskCheckResult {
@@ -232,21 +247,42 @@ func (a *Agent) PingCheck(c rmm.CheckDef) PingCheckResult {
 	return res
 }
 
-// checkRunnerBudget is how many seconds the Windows service gives one check
-// run child (-m checkrunner, -m runchecks) before it kills it.
+// checkRunnerCeiling is how many seconds the Windows service waits for one
+// check run child (-m checkrunner, -m runchecks) before it kills it. The
+// child ends itself earlier, at runnerDeadline.
+const checkRunnerCeiling = 3600
+
+// checkRunnerBudget is the child's own deadline when no script check needs
+// longer, and its deadline until it has fetched its checks.
 const checkRunnerBudget = 600
 
-// checkSendMargin (seconds) is what a script check leaves of the budget for
-// the kill grace and sending the result: three retry waits and one client
-// timeout.
-const checkSendMargin = 60
+// checkSendMargin (seconds) is what a script check leaves for the kill grace
+// and sending the result: four tries with the 15 s client timeout and three
+// retry waits.
+const checkSendMargin = 90
 
-// runnerScriptTimeout keeps a script check inside the runner child's budget
-// with room to send its result, so a long check ends with its own timeout
-// result instead of dying with the child. Zero and negative are left to
-// RunScript's default.
+// checkStartAllowance (seconds) covers the child's start and the fetch of
+// its checks, which the service's ceiling counts and runnerDeadline does not.
+const checkStartAllowance = 30
+
+// runnerScriptTimeout keeps a script check inside the runner child's
+// ceiling with room to send its result, so a long check ends with its own
+// timeout result instead of dying with the child. Zero and negative are
+// left to RunScript's default.
 func runnerScriptTimeout(timeout int) int {
-	return min(timeout, checkRunnerBudget-checkSendMargin)
+	return min(timeout, checkRunnerCeiling-checkStartAllowance-checkSendMargin)
+}
+
+// runnerDeadline is how many seconds after the fetch the runner child gives
+// its checks: the budget, or the longest script check plus the send margin.
+func runnerDeadline(checks []rmm.CheckDef) int {
+	longest := 0
+	for _, c := range checks {
+		if c.Kind == "script" {
+			longest = max(longest, runnerScriptTimeout(c.TimeoutSec))
+		}
+	}
+	return max(checkRunnerBudget, longest+checkSendMargin)
 }
 
 func (a *Agent) ScriptCheck(c rmm.CheckDef) ScriptCheckResult {

@@ -470,7 +470,7 @@ func (r *rpcReq) run() {
 		}
 		if runtime.GOOS == "windows" {
 			r.reply("ok")
-			if _, err := CMD(a.EXE, []string{"-m", "runchecks"}, checkRunnerBudget); err != nil {
+			if _, err := CMD(a.EXE, []string{"-m", "runchecks"}, checkRunnerCeiling); err != nil {
 				a.Logger.Errorln("RPC RunChecks", err)
 			}
 			return

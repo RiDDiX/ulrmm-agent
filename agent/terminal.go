@@ -27,6 +27,7 @@ type TerminalSession struct {
 	Ptmx *os.File
 
 	lastUse atomic.Int64
+	waited  atomic.Bool // set once Cmd.Wait returned: the shell's pid is free again
 }
 
 func (s *TerminalSession) touch() { s.lastUse.Store(time.Now().UnixNano()) }
@@ -189,6 +190,7 @@ func (a *Agent) StartTerminalSession(sessionID, shell string, nc *nats.Conn) err
 	}()
 	go func() {
 		err := cmd.Wait()
+		sess.waited.Store(true)
 		a.Logger.Debugf("Terminal session %s exited: %v", sessionID, err)
 		code := 0
 		if err != nil {
@@ -311,9 +313,13 @@ func (a *Agent) ResizeTerminalSession(sessionID string, rows, cols int) error {
 	return pty.Setsize(sess.Ptmx, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
 }
 
-// KillTerminalSession kills the shell and its process group; its waiter
-// then sends done. Background jobs an interactive shell moved to groups of
-// their own are not killed.
+// KillTerminalSession ends the session the way a closed SSH session does.
+// The shell's descendants outside its process group (the jobs an
+// interactive shell moved to groups of their own) get SIGHUP: an ordinary
+// background job ends, one started with nohup or one that handles SIGHUP
+// keeps running. A shell that has already been waited for gets no hang-up:
+// its jobs were reparented and its pid may belong to another process. Then
+// the shell and its process group are killed; its waiter sends done.
 func (a *Agent) KillTerminalSession(sessionID string) error {
 	sess, ok := a.terminalSession(sessionID, false)
 	if !ok {
@@ -321,10 +327,30 @@ func (a *Agent) KillTerminalSession(sessionID string) error {
 		return nil
 	}
 	if sess.Cmd != nil && sess.Cmd.Process != nil {
-		killProcGroup(sess.Cmd.Process.Pid)
+		pid := sess.Cmd.Process.Pid
+		// read before the kill: a dead shell's jobs are reparented
+		hangUpOutsideGroup(pid, sess.jobs(listProcs))
+		killProcGroup(pid)
 		_ = sess.Cmd.Process.Kill()
 	}
 	a.stopTerminalSession(sessionID)
+	return nil
+}
+
+// jobs lists the shell's descendants. Once the shell was waited for, or the
+// process list no longer shows it as a child of this process, its pid may
+// belong to another process: nothing is listed then.
+func (s *TerminalSession) jobs(list func(details bool) []procEntry) []int32 {
+	if s.waited.Load() {
+		return nil
+	}
+	pid := int32(s.Cmd.Process.Pid)
+	procs := list(false)
+	for _, p := range procs {
+		if p.pid == pid && p.ppid == int32(os.Getpid()) {
+			return descendants(pid, procs)
+		}
+	}
 	return nil
 }
 

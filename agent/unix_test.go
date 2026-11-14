@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -497,6 +498,53 @@ func TestTerminalKillEndsTheSessionGroup(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("background process %d of the shell survived the kill", pid)
+}
+
+// Closing the terminal hangs up the jobs in groups of their own: one that
+// ignores SIGHUP keeps running, the other ends.
+func TestTerminalKillHangsUpJobs(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	hupFile, nohupFile := filepath.Join(dir, "hup"), filepath.Join(dir, "nohup")
+	a := testUpdateAgent()
+	a.TerminalSessions = map[string]*TerminalSession{}
+	cmd := exec.Command("/bin/sh", "-c", `"$0" -own-group "$1" & "$0" -own-group "$2" nohup & wait`, self, hupFile, nohupFile)
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
+		t.Skip("no pty:", err)
+	}
+	waited := make(chan struct{})
+	go func() { cmd.Wait(); close(waited) }()
+	a.TerminalSessions["k"] = &TerminalSession{ID: "k", Cmd: cmd, Ptmx: ptmx}
+	readPID := func(f string) int {
+		for i := 0; i < 100; i++ {
+			b, _ := os.ReadFile(f)
+			if pid, _ := strconv.Atoi(string(b)); pid != 0 {
+				return pid
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Fatal("no job pid in", f)
+		return 0
+	}
+	hup, nohup := readPID(hupFile), readPID(nohupFile)
+	t.Cleanup(func() { syscall.Kill(hup, syscall.SIGKILL); syscall.Kill(nohup, syscall.SIGKILL) })
+	for _, pid := range []int{hup, nohup} {
+		if g, err := syscall.Getpgid(pid); err != nil || g != pid || g == cmd.Process.Pid {
+			t.Fatalf("job %d: group %d, %v", pid, g, err)
+		}
+	}
+	a.KillTerminalSession("k")
+	<-waited
+	if !waitDead(hup) {
+		t.Fatalf("job %d survived the hang-up", hup)
+	}
+	if !alive(nohup) {
+		t.Fatalf("job %d that ignores SIGHUP was killed", nohup)
+	}
 }
 
 // An exited child nobody has waited for yet is a zombie: dead to alive().

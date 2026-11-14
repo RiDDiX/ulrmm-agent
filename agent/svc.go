@@ -173,6 +173,7 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 		a.guard("KillHungUpdates", a.KillHungUpdates)
 		time.Sleep(time.Second)
 		a.guard("CleanupAgentUpdates", a.CleanupAgentUpdates)
+		go a.guard("removeLegacyDefenderExclusion", a.removeLegacyDefenderExclusion)
 	}
 
 	conf := sanitizeIntervals(a.GetAgentCheckInConfig(a.GetCheckInConfFromAPI()))
@@ -461,7 +462,7 @@ func (a *Agent) CheckRunner() {
 			a.Logger.Debugln("CheckRunner():", err)
 		} else if !a.ChecksRunning() {
 			if runtime.GOOS == "windows" {
-				if _, err := CMD(a.EXE, []string{"-m", "checkrunner"}, checkRunnerBudget); err != nil {
+				if _, err := CMD(a.EXE, []string{"-m", "checkrunner"}, checkRunnerCeiling); err != nil {
 					a.Logger.Errorln("Checkrunner RunChecks", err)
 				}
 			} else {

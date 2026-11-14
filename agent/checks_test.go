@@ -4,18 +4,15 @@
 package agent
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
-	"net"
 	"net/http"
-	"net/url"
 	"reflect"
+	"regexp"
 	"runtime"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -320,95 +317,161 @@ func TestRunChecksSystemdContainer(t *testing.T) {
 		if m := got[id]; m == nil || m["status"] != "passing" || m["agent_id"] != "agent1" || m["more_info"] == "" {
 			t.Fatalf("check %v: %v", id, m)
 		}
+		if rid, _ := got[id]["result_id"].(string); !resultIDPattern.MatchString(rid) {
+			t.Fatalf("check %v: result_id %q", id, rid)
+		}
+	}
+	if got[8]["result_id"] == got[9]["result_id"] {
+		t.Fatal("two results share one result_id")
 	}
 }
 
 func TestRunnerScriptTimeout(t *testing.T) {
-	limit := 540
-	for in, want := range map[int]int{-5: -5, 0: 0, 120: 120, limit: limit, limit + 1: limit, 3600: limit} {
+	limit := 3480
+	for in, want := range map[int]int{-5: -5, 0: 0, 120: 120, 541: 541, limit: limit, limit + 1: limit, 86400: limit} {
 		if got := runnerScriptTimeout(in); got != want {
 			t.Errorf("runnerScriptTimeout(%d) = %d, want %d", in, got, want)
 		}
 	}
 }
 
+// Without a long script check the child ends at 600 s as before; a long one
+// gets its own timeout plus the send margin, and with the start allowance
+// it still ends before the service's ceiling.
+func TestRunnerDeadline(t *testing.T) {
+	script := func(secs int) rmm.CheckDef { return rmm.CheckDef{Kind: "script", TimeoutSec: secs} }
+	for _, c := range []struct {
+		checks []rmm.CheckDef
+		want   int
+	}{
+		{nil, 600},
+		{[]rmm.CheckDef{{Kind: "diskspace"}, script(0), script(-1)}, 600},
+		{[]rmm.CheckDef{script(120), script(510)}, 600},
+		{[]rmm.CheckDef{script(511)}, 601},
+		{[]rmm.CheckDef{script(120), script(1800), {Kind: "ping", TimeoutSec: 3000}}, 1890},
+		{[]rmm.CheckDef{script(3480)}, 3570},
+		{[]rmm.CheckDef{script(3510)}, 3570},
+		{[]rmm.CheckDef{script(86400)}, 3570},
+	} {
+		got := runnerDeadline(c.checks)
+		if got != c.want {
+			t.Errorf("runnerDeadline(%+v) = %d, want %d", c.checks, got, c.want)
+		}
+		if got+checkStartAllowance > checkRunnerCeiling {
+			t.Errorf("deadline %d does not end before the ceiling", got)
+		}
+	}
+}
+
+// resultIDs records the result_id of every check result PATCH.
+func resultIDs(t *testing.T, mu *sync.Mutex, ids *[]string, r *http.Request) int {
+	t.Helper()
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		t.Error(err)
+	}
+	id, _ := body["result_id"].(string)
+	mu.Lock()
+	defer mu.Unlock()
+	*ids = append(*ids, id)
+	return len(*ids)
+}
+
+// A result is sent again after a 5xx, with the same result_id, and not
+// after a 4xx.
 func TestSendCheckResultRetry(t *testing.T) {
 	wait := pkgRetryWait
 	pkgRetryWait = time.Millisecond
 	t.Cleanup(func() { pkgRetryWait = wait })
-	var calls atomic.Int32
+	var mu sync.Mutex
+	var ids []string
 	var answers []int
 	a := apiAgent(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPatch || r.URL.Path != "/api/v3/checkrunner/" {
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 		}
-		w.WriteHeader(answers[calls.Add(1)-1])
+		n := resultIDs(t, &mu, &ids, r)
+		w.WriteHeader(answers[n-1])
 	})
-	res := CPUMemResult{resultHead: resultHead{CheckID: 3, AgentID: "agent1"}, Pct: 7}
-
-	answers = []int{http.StatusServiceUnavailable, http.StatusOK}
-	a.sendCheckResult(res)
-	if calls.Load() != 2 {
-		t.Fatalf("503 then 200: %d calls", calls.Load())
-	}
-	for _, code := range []int{http.StatusBadRequest, http.StatusInternalServerError, http.StatusGatewayTimeout} {
-		calls.Store(0)
-		answers = []int{code, http.StatusOK}
-		a.sendCheckResult(res)
-		if calls.Load() != 1 {
-			t.Fatalf("%d sent again: %d calls", code, calls.Load())
+	for _, c := range []struct {
+		answers []int
+		calls   int
+	}{
+		{[]int{http.StatusServiceUnavailable, http.StatusOK}, 2},
+		{[]int{http.StatusInternalServerError, http.StatusOK}, 2},
+		{[]int{http.StatusGatewayTimeout, http.StatusBadGateway, http.StatusOK}, 3},
+		{[]int{500, 500, 500, 500, http.StatusOK}, 4},
+		{[]int{http.StatusBadRequest, http.StatusOK}, 1},
+		{[]int{http.StatusInternalServerError, http.StatusConflict, http.StatusOK}, 2},
+	} {
+		ids, answers = nil, c.answers
+		a.sendCheckResult(CPUMemResult{resultHead: a.checkHead(rmm.CheckDef{CheckID: 3}), Pct: 7})
+		if len(ids) != c.calls {
+			t.Fatalf("answers %v: %d calls, want %d", c.answers, len(ids), c.calls)
+		}
+		for _, id := range ids {
+			if id != ids[0] || id == "" {
+				t.Fatalf("answers %v: result_id per call %q", c.answers, ids)
+			}
 		}
 	}
 }
 
-// A result whose answer did not come in time may be stored already.
-func TestSendCheckResultNotRepeatedAfterTimeout(t *testing.T) {
+// A result whose answer did not come in time is sent again with the same
+// result_id; the server applies it only once. The first request is held
+// until the client gave up on it, so it times out whatever the machine's
+// speed; any later one may time out as well and is then sent again.
+func TestSendCheckResultRepeatedAfterTimeout(t *testing.T) {
 	wait := pkgRetryWait
 	pkgRetryWait = time.Millisecond
 	t.Cleanup(func() { pkgRetryWait = wait })
-	var calls atomic.Int32
+	var mu sync.Mutex
+	var ids []string
+	gaveUp := make(chan struct{})
 	a := apiAgent(t, func(w http.ResponseWriter, r *http.Request) {
-		calls.Add(1)
-		// the server notices the client hanging up only once the body is read
-		io.Copy(io.Discard, r.Body)
-		<-r.Context().Done()
+		if resultIDs(t, &mu, &ids, r) == 1 {
+			<-r.Context().Done()
+			close(gaveUp)
+		}
 	})
-	a.rClient.SetTimeout(100 * time.Millisecond)
-	a.sendCheckResult(CPUMemResult{resultHead: resultHead{CheckID: 3, AgentID: "agent1"}, Pct: 7})
-	if calls.Load() != 1 {
-		t.Fatalf("%d calls", calls.Load())
+	a.rClient.SetTimeout(time.Second)
+	a.sendCheckResult(CPUMemResult{resultHead: a.checkHead(rmm.CheckDef{CheckID: 3}), Pct: 7})
+	<-gaveUp
+	mu.Lock()
+	defer mu.Unlock()
+	if len(ids) < 2 {
+		t.Fatalf("%d calls", len(ids))
+	}
+	for _, id := range ids {
+		if id != ids[0] || id == "" {
+			t.Fatalf("result_id per call: %q", ids)
+		}
 	}
 }
 
-func TestCheckResultResend(t *testing.T) {
-	refused := &url.Error{Op: "Patch", URL: "https://rmm/", Err: &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}}
-	dns := &url.Error{Op: "Patch", URL: "https://rmm/", Err: &net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{Err: "no such host", Name: "rmm"}}}
-	timeout := &url.Error{Op: "Patch", URL: "https://rmm/", Err: context.DeadlineExceeded}
-	reset := &url.Error{Op: "Patch", URL: "https://rmm/", Err: &net.OpError{Op: "read", Net: "tcp", Err: syscall.ECONNRESET}}
-	for _, c := range []struct {
-		code int
-		err  error
-		want bool
-	}{
-		{0, refused, true}, {0, dns, true}, {0, timeout, false}, {0, reset, false},
-		{502, errors.New("server answered 502"), true}, {503, errors.New("server answered 503"), true},
-		{500, errors.New("server answered 500"), false}, {504, errors.New("server answered 504"), false},
-		{400, errors.New("server answered 400"), false},
-	} {
-		if got := checkResultResend(c.code, c.err); got != c.want {
-			t.Errorf("%d %v: %v, want %v", c.code, c.err, got, c.want)
+var resultIDPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+// The field the server deduplicates by: 32 lowercase hex characters, new
+// for every result.
+func TestCheckHeadResultID(t *testing.T) {
+	a := testUpdateAgent()
+	seen := map[string]bool{}
+	for range 100 {
+		id := a.checkHead(rmm.CheckDef{CheckID: 3}).ResultID
+		if !resultIDPattern.MatchString(id) || seen[id] {
+			t.Fatalf("result_id %q (seen before: %v)", id, seen[id])
 		}
+		seen[id] = true
 	}
-	// the error the API client gives for a closed port
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	b, err := json.Marshal(CPUMemResult{resultHead: a.checkHead(rmm.CheckDef{CheckID: 3})})
 	if err != nil {
 		t.Fatal(err)
 	}
-	addr := l.Addr().String()
-	l.Close()
-	a := testUpdateAgent()
-	_, err = a.newAPIClient("https://"+addr, nil).R().Patch("/api/v3/checkrunner/")
-	if err == nil || !checkResultResend(0, err) {
-		t.Fatalf("closed port: %v", err)
+	var body map[string]any
+	if err := json.Unmarshal(b, &body); err != nil {
+		t.Fatal(err)
+	}
+	if id, _ := body["result_id"].(string); !resultIDPattern.MatchString(id) {
+		t.Fatalf("body %s", b)
 	}
 }

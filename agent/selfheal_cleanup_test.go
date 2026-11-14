@@ -62,3 +62,24 @@ func TestCleanupAgentUpdatesRemovesSetupSideFiles(t *testing.T) {
 		}
 	}
 }
+
+// Only the bootstrap's own entry matches; look-alikes and other exclusions
+// stay.
+func TestLegacyDefenderExclusions(t *testing.T) {
+	names := []string{
+		`C:\Program Files\Mesh Agent\meshagent.exe`,
+		`c:\windows\temp\is-*.tmp\` + IdentArtifact + `*`,
+		`C:\Windows\Temp\is-*.tmp\` + IdentArtifact + `.exe`,
+		`C:\Windows\Temp\is-*.tmp\*`,
+		`D:\Windows\Temp\is-*.tmp\` + IdentArtifact + `*`,
+		`C:\Windows\Temp\is-*.tmp\` + IdentArtifact + `* `,
+		`C:\Windows\Temp\is-*.tmp\other*`,
+	}
+	got := legacyDefenderExclusions(names)
+	if len(got) != 1 || got[0] != names[1] {
+		t.Fatalf("got %q", got)
+	}
+	if got := legacyDefenderExclusions(nil); got != nil {
+		t.Fatalf("got %q from no exclusions", got)
+	}
+}

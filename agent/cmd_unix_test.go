@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -101,6 +102,21 @@ func init() {
 	// never answers
 	testModes["-setsid"] = func(args []string) {
 		if _, err := syscall.Setsid(); err != nil {
+			os.Exit(2)
+		}
+		if err := os.WriteFile(args[0], []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+			os.Exit(2)
+		}
+		hang()
+	}
+	// a background job in a process group of its own, as an interactive
+	// shell starts it, that writes its pid to args[0]; with args[1] "nohup"
+	// it ignores SIGHUP
+	testModes["-own-group"] = func(args []string) {
+		if len(args) > 1 && args[1] == "nohup" {
+			signal.Ignore(syscall.SIGHUP)
+		}
+		if err := syscall.Setpgid(0, 0); err != nil {
 			os.Exit(2)
 		}
 		if err := os.WriteFile(args[0], []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {

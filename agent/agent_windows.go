@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -271,18 +272,25 @@ func (a *Agent) GetAgentCheckInConfig(c AgentCheckInConfig) AgentCheckInConfig {
 }
 
 // PatchMgmnt with true sets AUOptions 1: Windows Update downloads nothing
-// on its own and the RMM does the patching. false gives it back.
+// on its own and the RMM does the patching. false gives it back: the values
+// the agent set are deleted, so Windows treats the policy as not configured
+// again. Values the agent never sets, and values a policy or the user wrote
+// over the agent's, stay.
 func (a *Agent) PatchMgmnt(enable bool) error {
-	k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, `SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU`, registry.SET_VALUE|registry.WOW64_64KEY)
-	if err != nil {
-		return err
-	}
-	defer k.Close()
+	const auKey = `SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU`
 	var v uint32
 	if enable {
 		v = 1
-	}
-	if err := k.SetDWordValue("AUOptions", v); err != nil {
+		k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, auKey, registry.SET_VALUE|registry.WOW64_64KEY)
+		if err != nil {
+			return err
+		}
+		err = k.SetDWordValue("AUOptions", v)
+		k.Close()
+		if err != nil {
+			return err
+		}
+	} else if err := deleteAgentAUOption(auKey); err != nil {
 		return err
 	}
 	if isHomeEdition() {
@@ -302,30 +310,69 @@ func (a *Agent) PatchMgmnt(enable bool) error {
 	return ak.SetDWordValue("PatchMgmt", v)
 }
 
+// deleteAgentAUOption deletes AUOptions while it holds a value the agent
+// writes. A value of another type is not the agent's either.
+func deleteAgentAUOption(auKey string) error {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, auKey, registry.QUERY_VALUE|registry.SET_VALUE|registry.WOW64_64KEY)
+	if errors.Is(err, registry.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer k.Close()
+	if cur, typ, err := k.GetIntegerValue("AUOptions"); err != nil || typ != registry.DWORD || !agentAUOption(cur) {
+		return nil
+	}
+	if err := k.DeleteValue("AUOptions"); err != nil && !errors.Is(err, registry.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 // Home editions do not honour the AU policy; the pause switch of the
-// Settings app holds them for 35 days.
+// Settings app holds them for 35 days. Turned off, the pause goes only
+// while it is still the one the agent wrote.
 func pauseConsumerUpdates(enable bool) error {
-	k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, `SOFTWARE\Microsoft\WindowsUpdate\UX\Settings`, registry.SET_VALUE|registry.WOW64_64KEY)
+	const uxKey = `SOFTWARE\Microsoft\WindowsUpdate\UX\Settings`
+	if !enable {
+		k, err := registry.OpenKey(registry.LOCAL_MACHINE, uxKey, registry.QUERY_VALUE|registry.SET_VALUE|registry.WOW64_64KEY)
+		if errors.Is(err, registry.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		defer k.Close()
+		found := map[string]string{}
+		for _, n := range append(slices.Clone(pauseStartValues), pauseEndValues...) {
+			if v, _, err := k.GetStringValue(n); err == nil {
+				found[n] = v
+			}
+		}
+		if !agentPause(found) {
+			return nil
+		}
+		for n := range found {
+			if err := k.DeleteValue(n); err != nil && !errors.Is(err, registry.ErrNotExist) {
+				return err
+			}
+		}
+		return nil
+	}
+	k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, uxKey, registry.SET_VALUE|registry.WOW64_64KEY)
 	if err != nil {
 		return err
 	}
 	defer k.Close()
 	start, end := pauseWindow(time.Now())
-	values := map[string]string{
-		"PauseUpdatesStartTime":        start,
-		"PauseFeatureUpdatesStartTime": start,
-		"PauseQualityUpdatesStartTime": start,
-		"PauseUpdatesExpiryTime":       end,
-		"PauseFeatureUpdatesEndTime":   end,
-		"PauseQualityUpdatesEndTime":   end,
-	}
-	for name, v := range values {
-		if enable {
-			err = k.SetStringValue(name, v)
-		} else if err = k.DeleteValue(name); errors.Is(err, registry.ErrNotExist) {
-			err = nil
+	for _, n := range pauseStartValues {
+		if err := k.SetStringValue(n, start); err != nil {
+			return err
 		}
-		if err != nil {
+	}
+	for _, n := range pauseEndValues {
+		if err := k.SetStringValue(n, end); err != nil {
 			return err
 		}
 	}
@@ -355,6 +402,59 @@ func (a *Agent) rearmPatchMgmt() {
 	if err := a.PatchMgmnt(true); err != nil {
 		a.Logger.Debugln("rearmPatchMgmt():", err)
 	}
+}
+
+// removeLegacyDefenderExclusion drops the process exclusion of the earlier
+// bootstrap, once per service start. The registry read decides, so
+// PowerShell only starts on a device that still has the entry, and it is
+// read again afterwards: Defender may accept the call and keep the entry,
+// or refuse it (tamper protection, another antivirus).
+func (a *Agent) removeLegacyDefenderExclusion() {
+	names, err := defenderProcessExclusions()
+	if err != nil {
+		a.Logger.Debugln("removeLegacyDefenderExclusion():", err)
+		return
+	}
+	legacy := legacyDefenderExclusions(names)
+	if len(legacy) == 0 {
+		return
+	}
+	failed := map[string]error{}
+	for _, n := range legacy {
+		script := "Remove-MpPreference -ExclusionProcess '" + strings.ReplaceAll(n, "'", "''") + "' -ErrorAction Stop"
+		if _, err := CMD(getPowershellExe(), []string{"-NoProfile", "-NonInteractive", "-EncodedCommand", psEncoded(script)}, 60); err != nil {
+			failed[n] = err
+		}
+	}
+	if names, err = defenderProcessExclusions(); err != nil {
+		a.Logger.Debugln("removeLegacyDefenderExclusion():", err)
+		return
+	}
+	kept := legacyDefenderExclusions(names)
+	for _, n := range legacy {
+		switch {
+		case !slices.Contains(kept, n):
+			a.Logger.Infof("Defender exclusion %s removed", n)
+		case failed[n] != nil:
+			a.Logger.Errorf("Defender exclusion %s is still there: %v", n, failed[n])
+		default:
+			a.Logger.Errorf("Defender exclusion %s is still there", n)
+		}
+	}
+}
+
+// defenderProcessExclusions lists the value names under Defender's process
+// exclusions, none when the key does not exist.
+func defenderProcessExclusions() ([]string, error) {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, `SOFTWARE\Microsoft\Windows Defender\Exclusions\Processes`, registry.QUERY_VALUE|registry.WOW64_64KEY)
+	if errors.Is(err, registry.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer k.Close()
+	return k.ReadValueNames(-1)
 }
 
 func (a *Agent) SendSoftware() {

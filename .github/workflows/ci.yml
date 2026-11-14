@@ -60,6 +60,13 @@ jobs:
           printf 'MZ' > agent.exe
           build() { LC_ALL=C.UTF-8 makensis -V2 -WX -INPUTCHARSET UTF8 "-DOutFile=$RUNNER_TEMP/agent-windows.exe" "$@" build/setup.nsi; }
           build
+          # without a URL the three link values are removed from the uninstall entry, with one they are written
+          empty=$(build -V4) url=$(build -V4 -DMyAppURL=https://example.com/)
+          for v in URLInfoAbout HelpLink URLUpdateInfo; do
+            grep -qx "DeleteRegValue: HKLM\\\\.*\\\\$v" <<<"$empty" && ! grep -q "^WriteRegStr: .*\\\\$v=" <<<"$empty" &&
+              grep -qx "WriteRegStr: HKLM\\\\.*\\\\$v=https://example.com/" <<<"$url" && ! grep -q "^DeleteRegValue: .*\\\\$v\$" <<<"$url" ||
+              { echo "link value $v"; exit 1; }
+          done
           # the uninstaller removes the program directory: these values must stop the build
           for d in MyAppProgDir= MyAppProgDir=. 'MyAppProgDir=. .' 'MyAppProgDir=a\b' MyAppProgDir=a/b MyAppProgDir=C: \
             'MyAppProgDir=$R1' 'MyAppProgDir=a$$$b' MyAppExeName= MyAppExeName=. 'MyAppExeName=..\x.exe' \

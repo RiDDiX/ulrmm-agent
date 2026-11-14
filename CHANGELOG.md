@@ -1,5 +1,14 @@
 # Agent changelog
 
+## 2.14.11.2026 (2026-11-14)
+
+- check results carry an id that stays the same when the result is sent again, so the server stores a resent result only once. A result is sent again after a timeout, a connection error or a server error (5xx), up to four tries; after any other error answer it is sent once and logged
+- Windows: a script check with a timeout above 540 seconds runs to its own timeout, up to 3480 seconds. While it runs the check run is held, and a check run forced from the dashboard answers busy. A check run ends itself, with every process it started, when its time is up: 600 seconds, or the longest script check timeout plus 90 seconds when that is longer
+- Linux, macOS, FreeBSD: closing a terminal hangs up the shell's background jobs as closing an SSH session does: an ordinary background job ends, a job started with nohup keeps running. Background jobs that kept running after a closed terminal before now end with it
+- Windows: the Defender process exclusion for the setup's temporary folder that the earlier PowerShell bootstrap left behind is removed at service start, and the agent log says whether it is gone; other exclusions are not touched
+- Windows Update policy: giving control back removes the values the agent set instead of writing 0, so Windows treats the policy as not configured again; values a policy or the user changed since then stay
+- Windows setup: a setup built without a brand URL writes no URL values to the uninstall entry and removes those an earlier setup wrote
+
 ## 1.14.11.2026 (2026-11-14)
 
 - Windows: the installer is built with NSIS. It takes the same switches (/VERYSILENT, /SILENT, /SUPPRESSMSGBOXES, /NORESTART, /LOG=), keeps the file names and the entry in "Apps & features", and updates an existing installation in place. It needs Windows 10 or newer; the uninstaller removes only the program directory. build/setup.iss stays as the fallback packer for one release

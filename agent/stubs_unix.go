@@ -41,6 +41,7 @@ func (a *Agent) UninstallCleanup()                        {}
 func (a *Agent) GetPython(_ bool)                         {}
 func (a *Agent) PatchMgmnt(_ bool) error                  { return nil }
 func (a *Agent) rearmPatchMgmt()                          {}
+func (a *Agent) removeLegacyDefenderExclusion()           {}
 func (a *Agent) GetInstalledSoftware() []rmm.InstalledApp { return []rmm.InstalledApp{} }
 func (a *Agent) ChecksRunning() bool                      { return checksBusy.Load() }
 func (a *Agent) InstallChoco()                            {}

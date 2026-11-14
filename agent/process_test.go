@@ -4,6 +4,8 @@
 package agent
 
 import (
+	"os"
+	"os/exec"
 	"reflect"
 	"testing"
 	"time"
@@ -23,6 +25,33 @@ func TestDescendantsSkipsReusedParentPID(t *testing.T) {
 	got := descendants(4000, procs)
 	if !reflect.DeepEqual(got, []int32{4100, 4300, 4200}) {
 		t.Fatalf("got %v", got)
+	}
+}
+
+// The hang-up walk only starts from a shell that is still this process's
+// child and has not been waited for.
+func TestTerminalJobs(t *testing.T) {
+	self := int32(os.Getpid())
+	sess := &TerminalSession{Cmd: &exec.Cmd{Process: &os.Process{Pid: 4000}}}
+	listed := 0
+	list := func(procs ...procEntry) func(bool) []procEntry {
+		return func(bool) []procEntry { listed++; return procs }
+	}
+	shell := procEntry{pid: 4000, ppid: self}
+	job := procEntry{pid: 4100, ppid: 4000}
+	if got := sess.jobs(list(shell, job)); !reflect.DeepEqual(got, []int32{4100}) {
+		t.Fatalf("live shell: %v", got)
+	}
+	if got := sess.jobs(list(procEntry{pid: 4000, ppid: 1}, job)); got != nil {
+		t.Fatalf("pid 4000 of another parent: %v", got)
+	}
+	if got := sess.jobs(list(job)); got != nil {
+		t.Fatalf("shell not listed: %v", got)
+	}
+	sess.waited.Store(true)
+	listed = 0
+	if got := sess.jobs(list(shell, job)); got != nil || listed != 0 {
+		t.Fatalf("waited shell: %v, process list read %d times", got, listed)
 	}
 }
 
