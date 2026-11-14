@@ -696,6 +696,14 @@ func (a *Agent) CleanupAgentUpdates() {
 			}
 		}
 	}
+	// side files of a setup that was killed before it moved them into place
+	if a.ProgramDir != "" {
+		for _, name := range []string{IdentWinExe + ".new", "unins000.exe.new"} {
+			if err := os.Remove(filepath.Join(a.ProgramDir, name)); err != nil && !os.IsNotExist(err) {
+				a.Logger.Debugln("CleanupAgentUpdates():", err)
+			}
+		}
+	}
 	if tmp := os.Getenv("TMP"); tmp != "" {
 		entries, err := os.ReadDir(tmp)
 		if err != nil {
@@ -709,7 +717,7 @@ func (a *Agent) CleanupAgentUpdates() {
 	}
 }
 
-// Inno uninstaller in the program dir.
+// The setup's uninstaller in the program dir.
 func (a *Agent) GetUninstallExe() string {
 	matches, _ := filepath.Glob(filepath.Join(a.ProgramDir, "unins*.exe"))
 	for _, m := range matches {

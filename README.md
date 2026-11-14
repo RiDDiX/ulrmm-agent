@@ -9,8 +9,9 @@ including TrueNAS. Written in Go, one self-contained binary per target.
 
 Release agents are built and signed only by the UniversalLocal RMM server
 (`riddix/agents/build_agents.sh`), which writes branding and the agent identity
-into `agent/brand.go` before compiling and builds the Windows installer from
-`build/setup.iss`. Installing the server and adding agents is described in the
+into `agent/brand.go` before compiling and builds the Windows installer with
+NSIS from `build/setup.nsi` (`build/setup.iss`, for Inno Setup, stays as the
+fallback packer). Installing the server and adding agents is described in the
 [server README](https://github.com/RiDDiX/ulrmm) (`../README.md` when this
 repository is checked out inside the server repository). A feature tour with
 screenshots is in the server repository under
@@ -93,8 +94,8 @@ What the Go 1.27 toolchain supports: Windows 10 and Windows Server 2016 or newer
 
 The agent has its own version in the format `X.DD.MM.YYYY` (release date, `X` =
 release number of that day, stored without `v`). It changes only when the agent
-changes. `version` in `main.go` and `MyAppVersion` in `build/setup.iss` must
-equal `LATEST_AGENT_VER` in the server's `api/ulrmm/ulrmm/settings.py`.
+changes. `version` in `main.go` and `MyAppVersion` in `build/setup.nsi` and
+`build/setup.iss` must equal `LATEST_AGENT_VER` in the server's `api/ulrmm/ulrmm/settings.py`.
 
 ## Local build
 
@@ -135,7 +136,8 @@ derivatives, include LICENSE.md or a link to it and keep the copyright notices,
 Third-party parts keep their own licenses: `agent/wua_windows.go` (Google
 osconfig, Apache-2.0), `internal/taskmaster` and `internal/winapi` (MIT), the
 winpty binaries in `agent/winpty_bins` (MIT), the Go modules compiled into the
-agent and the Inno Setup runtime in the Windows installer.
+agent, the NSIS runtime in the Windows installer and the Inno Setup runtime in
+installers built with the fallback packer.
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) lists them with their license
 texts. Every agent carries these notices: `-m licenses` prints them together
 with LICENSE.md and NOTICE.md, and the Windows installer puts the three files

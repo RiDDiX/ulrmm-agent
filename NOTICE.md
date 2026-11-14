@@ -27,8 +27,14 @@ This product includes third-party software:
 - `agent/winpty_bins`: winpty 0.4.3, Copyright (c) 2011-2016 Ryan Prichard,
   MIT License
 - the Go modules compiled into the agent, each under its own license
-- the Inno Setup runtime in the Windows installer, Copyright (C) 1997-2025
-  Jordan Russell, portions Copyright (C) 2000-2025 Martijn Laan
+- the NSIS runtime in the Windows installer, Copyright (C) 1999-2021 Nullsoft
+  and Contributors, zlib/libpng License; its LZMA module, Copyright (C)
+  1999-2006 Igor Pavlov, Copyright (C) 2003-2021 Amir Szekely, Common Public
+  License 1.0; the x86 call code of its System plug-in, Copyright (c) 2008
+  Thomas Gaugler, Copyright (c) 2008-2021 NSIS Contributors, MIT License
+- the Inno Setup runtime in installers built with the fallback packer
+  (`build/setup.iss`), Copyright (C) 1997-2025 Jordan Russell, portions
+  Copyright (C) 2000-2025 Martijn Laan
 
 Third-party components keep their own licenses and copyright notices, see
 THIRD_PARTY_NOTICES.md.

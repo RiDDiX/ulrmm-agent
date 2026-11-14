@@ -52,3 +52,23 @@ jobs:
 
       - name: Test with race detector
         run: CGO_ENABLED=1 go test -race ./...
+
+      - name: Compile the Windows installer script
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends nsis
+          printf 'MZ' > agent.exe
+          build() { LC_ALL=C.UTF-8 makensis -V2 -WX -INPUTCHARSET UTF8 "-DOutFile=$RUNNER_TEMP/agent-windows.exe" "$@" build/setup.nsi; }
+          build
+          # the uninstaller removes the program directory: these values must stop the build
+          for d in MyAppProgDir= MyAppProgDir=. 'MyAppProgDir=. .' 'MyAppProgDir=a\b' MyAppProgDir=a/b MyAppProgDir=C: \
+            'MyAppProgDir=$R1' 'MyAppProgDir=a$$$b' MyAppExeName= MyAppExeName=. 'MyAppExeName=..\x.exe' \
+            MyAppSvcName= 'MyAppSvcName=$0' MyAppRegKey= 'MyAppRegKey=$R0' MyAppId= 'MyAppId=$9'; do
+            if out=$(build "-D$d" 2>&1); then echo "built with -D$d"; exit 1; fi
+            grep -q '^!error: ' <<<"$out" || { echo "-D$d: $out"; exit 1; }
+          done
+          # names an installation may already have must keep building
+          for d in 'MyAppProgDir=Acme Inc.' 'MyAppProgDir= Acme' MyAppProgDir=Acme..Inc 'MyAppProgDir=$$R1' \
+            'MyAppExeName=agent.exe.' 'MyAppRegKey=Acme\Agent'; do
+            build "-D$d" >/dev/null || { echo "failed with -D$d"; exit 1; }
+          done

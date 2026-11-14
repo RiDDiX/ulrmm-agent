@@ -108,8 +108,7 @@ func (w windowsHeal) installDownload(path, _ string) error {
 	if err := copyFileAtomic(path, installer, 0o755); err != nil {
 		return err
 	}
-	return startDetached(installer, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
-		"/LOG="+filepath.Join(dir, "selfheal-install.log"))
+	return startDetached(installer, healSetupArgs(filepath.Join(dir, "selfheal-install.log"))...)
 }
 
 // a running exe cannot be replaced on Windows

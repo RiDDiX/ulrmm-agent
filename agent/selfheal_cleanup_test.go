@@ -28,3 +28,37 @@ func TestCleanupAgentUpdatesRemovesHealInstallers(t *testing.T) {
 		t.Fatal("the install log is gone:", err)
 	}
 }
+
+// A setup killed before its replace step leaves its side files in the
+// program directory; the installed files stay.
+func TestCleanupAgentUpdatesRemovesSetupSideFiles(t *testing.T) {
+	t.Setenv("TMP", t.TempDir())
+	a := testUpdateAgent()
+	a.WinTmpDir = t.TempDir()
+	a.ProgramDir = t.TempDir()
+	var gone, kept []string
+	for _, n := range []string{IdentWinExe + ".new", "unins000.exe.new"} {
+		gone = append(gone, filepath.Join(a.ProgramDir, n))
+	}
+	for _, n := range []string{IdentWinExe, "unins000.exe", "LICENSE.md.new"} {
+		kept = append(kept, filepath.Join(a.ProgramDir, n))
+	}
+	// the names count only in the program directory
+	kept = append(kept, filepath.Join(a.WinTmpDir, IdentWinExe+".new"))
+	for _, p := range append(gone, kept...) {
+		if err := os.WriteFile(p, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.CleanupAgentUpdates()
+	for _, p := range gone {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Error("left behind:", p)
+		}
+	}
+	for _, p := range kept {
+		if _, err := os.Stat(p); err != nil {
+			t.Error("removed:", p, err)
+		}
+	}
+}

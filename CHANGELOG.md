@@ -1,5 +1,23 @@
 # Agent changelog
 
+## 1.14.11.2026 (2026-11-14)
+
+- Windows: the installer is built with NSIS. It takes the same switches (/VERYSILENT, /SILENT, /SUPPRESSMSGBOXES, /NORESTART, /LOG=), keeps the file names and the entry in "Apps & features", and updates an existing installation in place. It needs Windows 10 or newer; the uninstaller removes only the program directory. build/setup.iss stays as the fallback packer for one release
+- Windows: side files that a stopped setup left in the program directory are removed by the update cleanup
+- Windows uninstall (Inno Setup): the self-heal task and the service are stopped and removed after the confirmation, before the files are deleted; the setup needs Windows 10 or newer
+- integrity manifest: a failed download is tried again after 10 minutes instead of at the next 6 hour round; only one download runs at a time
+- tar.gz archives are unpacked with the same size and entry limits as zip archives
+- check results are sent again when the server cannot be reached or answers 502 or 503; other errors are sent once and logged, so the server records no second history row
+- the check run has one 600 second budget; on Windows script checks end at 540 seconds with their timeout result instead of being killed together with the run
+- hardware health is collected in stages: when the time runs out the finished stages are kept and "collection timed out" is reported; smartctl reads up to four disks at once; NVMe controllers without a device node (container guests) are skipped, and the NVMe temperature warning no longer marks the disk as failing
+- hosts with more than 32 mounts report the 32 with the shortest paths
+- keep awake: when restoring the lid and sleep settings fails, the saved values are kept and the restore is tried again every 5 minutes
+- macOS and FreeBSD self-heal: the service counts as missing only when launchd or rc says so; a status query that times out leaves the service alone
+- Windows: scheduled tasks are looked up by name in the root folder only, without reading other tasks
+- Windows: command output is decoded with the system's OEM and ANSI code pages, double-byte code pages included; cmd scripts with non-ASCII characters run under code page 65001 (UTF-8), ASCII scripts are run unchanged
+- Windows: resume from sleep is handled once instead of twice when a user wakes the device
+- a command that runs into its timeout ends with all its child processes, including those that started their own session
+
 ## 1.13.11.2026 (2026-11-13)
 
 - winget install: a package without an installer for all users no longer ends with a bare 0x8A150010. A package that installs per user only is installed for the signed-in user with that user's normal rights, and the result says so; without a signed-in user the result says that one has to sign in. A package whose installer declares no scope is installed once more without --scope. One 20 minute limit covers the whole sequence

@@ -247,7 +247,24 @@ func TestPSEncoded(t *testing.T) {
 func TestExistingInstallText(t *testing.T) {
 	got := existingInstallText(`C:\Program Files\ULRMM Agent\unins000.exe`)
 	if !strings.HasPrefix(got, "Existing installation found and must be removed before attempting to reinstall.\n") ||
-		!strings.Contains(got, `"C:\Program Files\ULRMM Agent\unins000.exe" /VERYSILENT /UNINSTALLCODE=<uninstall code>`) {
+		!strings.Contains(got, `"C:\Program Files\ULRMM Agent\unins000.exe" /VERYSILENT /UNINSTALLCODE=<uninstall code>`) ||
+		strings.Contains(got, "and start this installer again") {
 		t.Error(got)
+	}
+}
+
+func TestSetupArgs(t *testing.T) {
+	for _, tc := range []struct {
+		got  []string
+		want string
+	}{
+		{updateSetupArgs(`C:\tmp dir\u.log`), `/VERYSILENT /S /LOG=C:\tmp dir\u.log`},
+		{healSetupArgs(`C:\w\h.log`), `/VERYSILENT /S /SUPPRESSMSGBOXES /NORESTART /LOG=C:\w\h.log`},
+		{uninstallerArgs("c0de"), `/VERYSILENT /S /UNINSTALLCODE=c0de`},
+		{uninstallerArgs(""), `/VERYSILENT /S`},
+	} {
+		if got := strings.Join(tc.got, " "); got != tc.want {
+			t.Errorf("got %q, want %q", got, tc.want)
+		}
 	}
 }

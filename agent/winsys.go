@@ -246,7 +246,32 @@ func psEncoded(script string) string {
 }
 
 // existingInstallText is printed when -m install finds a configured agent.
+// The uninstaller may return before it has finished (the NSIS one always
+// does), so the text does not rely on its exit.
 func existingInstallText(uninstaller string) string {
 	return "Existing installation found and must be removed before attempting to reinstall.\n" +
-		fmt.Sprintf("Remove it from the dashboard, or run \"%s\" /VERYSILENT /UNINSTALLCODE=<uninstall code> and start this installer again.", uninstaller)
+		fmt.Sprintf("Remove it from the dashboard, or run \"%s\" /VERYSILENT /UNINSTALLCODE=<uninstall code>. ", uninstaller) +
+		"Start this installer again once the uninstaller's folder is gone."
+}
+
+// The setup and its uninstaller take Inno's switches. NSIS reads its own /S
+// before the script runs; without it the NSIS runtime may show an error box
+// that nobody sees when the service starts the setup. Inno Setup has no /S
+// switch of its own.
+// /S comes before /LOG= and /UNINSTALLCODE=, whose values run to the next
+// switch.
+func updateSetupArgs(logFile string) []string {
+	return []string{"/VERYSILENT", "/S", "/LOG=" + logFile}
+}
+
+func healSetupArgs(logFile string) []string {
+	return []string{"/VERYSILENT", "/S", "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=" + logFile}
+}
+
+func uninstallerArgs(code string) []string {
+	args := []string{"/VERYSILENT", "/S"}
+	if code != "" {
+		args = append(args, "/UNINSTALLCODE="+code)
+	}
+	return args
 }

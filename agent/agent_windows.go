@@ -466,7 +466,7 @@ func (a *Agent) AgentUpdate(url, inno, version, sha string) error {
 	}
 	expectStop(a.dataDir())
 	logFile := filepath.Join(a.WinTmpDir, updateLogName(version))
-	if err := startDetached(updater, "/VERYSILENT", "/LOG="+logFile); err != nil {
+	if err := startDetached(updater, updateSetupArgs(logFile)...); err != nil {
 		clearExpectedStop(a.dataDir())
 		return fmt.Errorf("start %s: %w", inno, err)
 	}
@@ -497,11 +497,7 @@ func (a *Agent) uninstallLocal() error {
 // The setup's uninstaller refuses without the right code.
 func (a *Agent) runUninstaller(code string) error {
 	a.KillHungUpdates()
-	args := []string{"/VERYSILENT"}
-	if code != "" {
-		args = append(args, "/UNINSTALLCODE="+code)
-	}
-	return startDetached(filepath.Join(a.ProgramDir, a.GetUninstallExe()), args...)
+	return startDetached(filepath.Join(a.ProgramDir, a.GetUninstallExe()), uninstallerArgs(code)...)
 }
 
 // -m cleanup, run by the uninstaller before it deletes the program directory.
