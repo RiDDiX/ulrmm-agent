@@ -32,9 +32,6 @@ This product includes third-party software:
   1999-2006 Igor Pavlov, Copyright (C) 2003-2021 Amir Szekely, Common Public
   License 1.0; the x86 call code of its System plug-in, Copyright (c) 2008
   Thomas Gaugler, Copyright (c) 2008-2021 NSIS Contributors, MIT License
-- the Inno Setup runtime in installers built with the fallback packer
-  (`build/setup.iss`), Copyright (C) 1997-2025 Jordan Russell, portions
-  Copyright (C) 2000-2025 Martijn Laan
 
 Third-party components keep their own licenses and copyright notices, see
 THIRD_PARTY_NOTICES.md.
