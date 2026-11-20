@@ -21,7 +21,7 @@ import (
 
 var (
 	// the server build reads this line: keep it `version = "X.DD.MM.YYYY"`
-	version = "1.20.11.2026"
+	version = "2.20.11.2026"
 	log     = logrus.New()
 )
 

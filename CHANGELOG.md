@@ -1,5 +1,9 @@
 # Agent changelog
 
+## 2.20.11.2026 (2026-11-20)
+
+- self-repair: a repair downloads and stages its files under names of its own, so two repairs at the same moment no longer overwrite each other's files; files left by an interrupted repair are removed at service start
+
 ## 1.20.11.2026 (2026-11-20)
 
 - check results stop retrying after 10 minutes, including time spent suspended

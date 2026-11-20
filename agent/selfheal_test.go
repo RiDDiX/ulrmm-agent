@@ -5,10 +5,12 @@ package agent
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -237,6 +239,98 @@ func TestReinstallsFromServerWhenCopyIsBad(t *testing.T) {
 	}
 	if len(actions) != 1 || !strings.Contains(actions[0], "reinstalled 2.11.2") {
 		t.Fatalf("actions %v", actions)
+	}
+}
+
+// The scheduled check and the integrity check may repair at the same time.
+func TestRepairsAtOnceUseOwnDownloads(t *testing.T) {
+	f := newHealFixture(t)
+	_ = f.h.setup(f.main)
+	writeFile(t, f.h.healBin(f.main), "copy corrupted")
+	var m healManifest
+	_ = readJSON(f.h.manifestPath(), &m)
+	cur := signedDownload(t, "2.11.2", "https://api/agentdist/x", sumOf(t, "fresh build"))
+
+	var dests []string
+	inner := false
+	f.h.fetch = func(url, dest string) error {
+		dests = append(dests, dest)
+		if err := os.WriteFile(dest, []byte("fresh build"), 0o600); err != nil {
+			return err
+		}
+		if len(dests) == 1 {
+			_, inner = f.h.repairBinary(m, cur, nil)
+		}
+		return nil
+	}
+	_, outer := f.h.repairBinary(m, cur, nil)
+	if !inner || !outer || len(dests) != 2 || dests[0] == dests[1] {
+		t.Fatalf("inner %v outer %v downloads %v", inner, outer, dests)
+	}
+	if left, _ := filepath.Glob(filepath.Join(f.h.dir(), "download*.tmp")); len(left) != 0 {
+		t.Fatalf("downloads left: %v", left)
+	}
+}
+
+// Two installs at once must leave one of the two builds in full, never a mix.
+func TestInstallsAtOnceLeaveOneWholeBinary(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "agent")
+	builds := make([]string, 2)
+	srcs := make([]string, 2)
+	for i := range builds {
+		builds[i] = strings.Repeat(string(rune('a'+i)), 1<<20)
+		srcs[i] = filepath.Join(dir, fmt.Sprintf("build-%d", i))
+		writeFile(t, srcs[i], builds[i])
+	}
+	for n := 0; n < 50; n++ {
+		start := make(chan struct{})
+		errs := make([]error, 2)
+		var wg sync.WaitGroup
+		for i := range srcs {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				<-start
+				errs[i] = copyFileAtomic(srcs[i], main, 0o755)
+			}(i)
+		}
+		close(start)
+		wg.Wait()
+		if errs[0] != nil || errs[1] != nil {
+			t.Fatalf("round %d: %v", n, errs)
+		}
+		if got := readFile(t, main); got != builds[0] && got != builds[1] {
+			t.Fatalf("round %d: binary is neither build", n)
+		}
+		if left, _ := filepath.Glob(filepath.Join(dir, "*.selfheal-*")); len(left) != 0 {
+			t.Fatalf("round %d: staging files left: %v", n, left)
+		}
+	}
+}
+
+func TestSetupRemovesStaleDownloads(t *testing.T) {
+	f := newHealFixture(t)
+	_ = f.h.setup(f.main)
+	old := filepath.Join(f.h.dir(), "download-1.tmp")
+	fresh := filepath.Join(f.h.dir(), "download-2.tmp")
+	oldStage := f.main + ".selfheal-1"
+	freshStage := f.h.healBin(f.main) + ".selfheal-2"
+	for _, p := range []string{old, fresh, oldStage, freshStage} {
+		writeFile(t, p, "x")
+	}
+	past := time.Now().Add(-2 * time.Hour)
+	for _, p := range []string{old, oldStage} {
+		if err := os.Chtimes(p, past, past); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = f.h.setup(f.main)
+	if healFileExists(old) || !healFileExists(fresh) {
+		t.Fatalf("old kept %v, fresh kept %v", healFileExists(old), healFileExists(fresh))
+	}
+	if healFileExists(oldStage) || !healFileExists(freshStage) {
+		t.Fatalf("old staging kept %v, fresh staging kept %v", healFileExists(oldStage), healFileExists(freshStage))
 	}
 }
 

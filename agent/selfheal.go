@@ -144,6 +144,19 @@ func (h *healer) setup(runningExe string) error {
 		}
 	}
 
+	// downloads and staging files left behind by a crash; fetches time out
+	// after 10 minutes
+	stale, _ := filepath.Glob(filepath.Join(h.dir(), "download*.tmp"))
+	for _, dir := range []string{h.dir(), filepath.Dir(runningExe)} {
+		more, _ := filepath.Glob(filepath.Join(dir, "*.selfheal-*"))
+		stale = append(stale, more...)
+	}
+	for _, p := range stale {
+		if fi, err := os.Stat(p); err == nil && time.Since(fi.ModTime()) > time.Hour {
+			_ = os.Remove(p)
+		}
+	}
+
 	h.heartbeat()
 	return h.p.registerSchedule(healBin)
 }
@@ -303,7 +316,14 @@ func (h *healer) repairBinary(m healManifest, cur healDownload, cerr error) (str
 		}
 		return "", false
 	}
-	tmp := filepath.Join(h.dir(), "download.tmp")
+	// a scheduled and an integrity repair can download at the same time
+	f, err := os.CreateTemp(h.dir(), "download-*.tmp")
+	if err != nil {
+		h.logf("selfheal: downloading the current build failed: %v", err)
+		return "", false
+	}
+	tmp := f.Name()
+	f.Close()
 	defer os.Remove(tmp)
 	if err := h.fetch(cur.URL, tmp); err != nil {
 		h.logf("selfheal: downloading the current build failed: %v", err)
@@ -385,9 +405,15 @@ func copyFileAtomic(src, dst string, mode os.FileMode) error {
 	}
 	defer in.Close()
 
-	tmp := dst + ".selfheal-tmp"
-	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	// own staging file: the scheduled healer and the service may repair at once
+	out, err := os.CreateTemp(filepath.Dir(dst), filepath.Base(dst)+".selfheal-*")
 	if err != nil {
+		return err
+	}
+	tmp := out.Name()
+	if err := out.Chmod(mode); err != nil {
+		out.Close()
+		os.Remove(tmp)
 		return err
 	}
 	if _, err := io.Copy(out, in); err != nil {
@@ -410,7 +436,7 @@ func copyFileAtomic(src, dst string, mode os.FileMode) error {
 		return err
 	}
 	syncDir(filepath.Dir(dst))
-	return os.Chmod(dst, mode)
+	return nil
 }
 
 func readJSON(path string, v interface{}) error {

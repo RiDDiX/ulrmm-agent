@@ -104,11 +104,23 @@ func (w windowsHeal) installDownload(path, _ string) error {
 	if err := createWinTempDir(); err != nil {
 		return err
 	}
-	installer := filepath.Join(dir, fmt.Sprintf("selfheal-%d.exe", time.Now().Unix()))
-	if err := copyFileAtomic(path, installer, 0o755); err != nil {
+	// CleanupAgentUpdates removes selfheal-*.exe once the repair is over
+	f, err := os.CreateTemp(dir, "selfheal-*.exe")
+	if err != nil {
 		return err
 	}
-	return startDetached(installer, healSetupArgs(filepath.Join(dir, "selfheal-install.log"))...)
+	installer := f.Name()
+	f.Close()
+	if err := copyFileAtomic(path, installer, 0o755); err != nil {
+		os.Remove(installer)
+		return err
+	}
+	if err := startDetached(installer, healSetupArgs(filepath.Join(dir, "selfheal-install.log"))...); err != nil {
+		// a started installer keeps its file open, so this only removes an unused copy
+		os.Remove(installer)
+		return err
+	}
+	return nil
 }
 
 // a running exe cannot be replaced on Windows
