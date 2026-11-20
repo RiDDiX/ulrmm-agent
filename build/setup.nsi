@@ -1,4 +1,4 @@
-; NSIS version of build/setup.iss, which stays as the fallback packer.
+; Windows setup of the agent, built with makensis.
 ; Display strings and the identity come from makensis -D defines set by the
 ; build. The defaults are the ulrmm identity. Another AppId, program
 ; directory, exe or service name makes a separate product that cannot update
@@ -14,6 +14,8 @@
 ;   $%NAME% in a value even after a doubled "$" (MyAppId keeps Inno's form
 ;   "{{GUID}" and is only checked)
 ; - quotes are removed: the values are quoted in the commands the setup runs
+; An identity value that would lose a brace, percent sign or quote stops the
+; build instead: the agent would carry the value the setup does not.
 ; The script doubles "&" for dialog labels itself. It stops the build when
 ; MyAppProgDir, MyAppExeName, MyAppSvcName, MyAppRegKey or MyAppId is empty
 ; or holds a single "$", or when MyAppProgDir or MyAppExeName holds "\", "/"
@@ -24,7 +26,7 @@
   !define MyAppName "UniversalLocal RMM Agent"
 !endif
 !ifndef MyAppVersion
-  !define MyAppVersion "3.14.11.2026"
+  !define MyAppVersion "1.20.11.2026"
 !endif
 ; file version is four numbers max: YYYY.M.D.X
 !ifndef MyAppNumVersion
@@ -235,7 +237,7 @@ FunctionEnd
 !insertmacro SysDrive "un."
 
 ; SOFTWARE\<RegKey> exists once the agent registered. 386 agents write the
-; 32-bit view, amd64 agents the 64-bit view; check both like setup.iss.
+; 32-bit view, amd64 agents the 64-bit view; check both.
 Function AgentConfigured
   StrCpy $Rc 0
   ${If} ${RunningX64}
@@ -296,7 +298,7 @@ Function .onInit
     MessageBox MB_ICONSTOP "Windows 10 or newer is required." /SD IDOK
     ; the same stop as the section first, else the old agent's own stop
     ; follows this start and the service stays down
-    Sleep 1000 ; setup.iss pings for a second before net stop
+    Sleep 1000 ; a second before net stop
     !insertmacro Run `"$SYSDIR\net.exe" stop "${MyAppSvcName}"` "Stop service"
     !insertmacro Run `"$SYSDIR\taskkill.exe" /F /IM "${MyAppExeName}"` "taskkill"
     !insertmacro Run `"$SYSDIR\net.exe" start "${MyAppSvcName}"` "Start service"
@@ -355,7 +357,7 @@ Function .onInstSuccess
 FunctionEnd
 
 Section "Agent" SecAgent
-  Sleep 1000 ; setup.iss pings for a second before net stop
+  Sleep 1000 ; a second before net stop
   !insertmacro Run `"$SYSDIR\net.exe" stop "${MyAppSvcName}"` "Stop service"
   !insertmacro Run `"$SYSDIR\taskkill.exe" /F /IM "${MyAppExeName}"` "taskkill"
 
@@ -581,7 +583,7 @@ Function un.Sha256Hex
   System::Call 'advapi32::CryptReleaseContext(p r3, i 0)'
 FunctionEnd
 
-; In: $0 value name. Out: $1 the value, 64-bit view first like setup.iss.
+; In: $0 value name. Out: $1 the value, 64-bit view first.
 Function un.StoredValue
   StrCpy $1 ""
   ${If} ${RunningX64}
@@ -620,7 +622,7 @@ Function un.onInit
       ${If} $8 != ""
         StrCpy $0 $8
         Call un.Sha256Hex
-        ; StrCmp ignores case, like CompareText in setup.iss
+        ; StrCmp ignores case
         ${If} $1 != ""
         ${AndIf} $1 == $9
           StrCpy $R5 1
@@ -644,7 +646,7 @@ Section "Uninstall"
   ; register a missing service again.
   !insertmacro Run `"$SYSDIR\schtasks.exe" /End /TN "${MyAppSvcName}-selfheal"` "end self-heal task"
   !insertmacro Run `"$SYSDIR\schtasks.exe" /Delete /TN "${MyAppSvcName}-selfheal" /F` "delete self-heal task"
-  Sleep 1000 ; setup.iss pings for a second before net stop
+  Sleep 1000 ; a second before net stop
   !insertmacro Run `"$SYSDIR\net.exe" stop "${MyAppSvcName}"` "Stop service"
   !insertmacro Run `"$SYSDIR\taskkill.exe" /F /IM "${MyAppExeName}"` "taskkill"
   !insertmacro Run `"$SYSDIR\sc.exe" delete "${MyAppSvcName}"` "delete service"

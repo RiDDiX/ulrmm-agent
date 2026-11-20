@@ -614,6 +614,14 @@ func (a *Agent) pkgPatch(ctx context.Context, job string, body interface{}) (int
 // patchWithRetry sends a final result: four tries, wait apart, none more
 // after a 4xx. A transport error (code 0) or a 5xx is tried again.
 func (a *Agent) patchWithRetry(path string, body interface{}, wait time.Duration) error {
+	return a.patchWithRetryFor(path, body, wait, 0)
+}
+
+// patchWithRetryFor is patchWithRetry that sends no more once limit (when
+// above zero) has passed since the first try.
+func (a *Agent) patchWithRetryFor(path string, body interface{}, wait, limit time.Duration) error {
+	// Round(0): the monotonic clock stops in suspend on Linux and macOS
+	first := time.Now().Round(0)
 	for try := 1; ; try++ {
 		code := 0
 		r, err := a.rClient.R().SetBody(body).Patch(path)
@@ -627,6 +635,9 @@ func (a *Agent) patchWithRetry(path string, body interface{}, wait time.Duration
 		}
 		a.Logger.Debugln("PATCH", path, err)
 		time.Sleep(wait)
+		if limit > 0 && time.Now().Round(0).Sub(first) > limit {
+			return fmt.Errorf("not sent again after %s: %w", limit, err)
+		}
 	}
 }
 

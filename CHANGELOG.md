@@ -1,5 +1,10 @@
 # Agent changelog
 
+## 1.20.11.2026 (2026-11-20)
+
+- check results stop retrying after 10 minutes, including time spent suspended
+- Windows: NSIS builds the installer. The Inno Setup fallback was removed
+
 ## 3.14.11.2026 (2026-11-14)
 
 - Mesh repair reports to the server whether it worked, and the reason when it did not

@@ -82,6 +82,16 @@ type HealthCheckResult struct {
 	Health *Health `json:"health"`
 }
 
+// seams for the runner child's deadline; tests change them
+var (
+	runnerGOOS = runtime.GOOS
+	runnerTick = time.Second
+	runnerExit = func() {
+		killTree(int32(os.Getpid()))
+		os.Exit(1)
+	}
+)
+
 // checksBusy: a run in this process; the runchecks rpc and the CheckRunner
 // loop would otherwise run every check twice at the same time.
 var checksBusy atomic.Bool
@@ -98,12 +108,11 @@ func (a *Agent) RunChecks(force bool) error {
 	// the budget until the checks are fetched
 	var deadline *time.Timer
 	var deadlineSecs atomic.Int64
-	if runtime.GOOS == "windows" {
+	if runnerGOOS == "windows" {
 		deadlineSecs.Store(checkRunnerBudget)
-		deadline = time.AfterFunc(checkRunnerBudget*time.Second, func() {
+		deadline = time.AfterFunc(checkRunnerBudget*runnerTick, func() {
 			a.Logger.Errorf("RunChecks(): checks still running at the %d s deadline, ending the run", deadlineSecs.Load())
-			killTree(int32(os.Getpid()))
-			os.Exit(1)
+			runnerExit()
 		})
 		defer deadline.Stop()
 	}
@@ -126,7 +135,7 @@ func (a *Agent) RunChecks(force bool) error {
 	if deadline != nil {
 		secs := runnerDeadline(data.List)
 		deadlineSecs.Store(int64(secs))
-		deadline.Reset(time.Duration(secs) * time.Second)
+		deadline.Reset(time.Duration(secs) * runnerTick)
 	}
 
 	var wg sync.WaitGroup
@@ -197,8 +206,12 @@ func (a *Agent) RunChecks(force bool) error {
 	return nil
 }
 
+// checkResultLimit: a result older than this is not sent again; the server
+// would apply it as new once its duplicate window is over.
+var checkResultLimit = 10 * time.Minute
+
 func (a *Agent) sendCheckResult(payload interface{}) {
-	if err := a.patchWithRetry("/api/v3/checkrunner/", payload, pkgRetryWait); err != nil {
+	if err := a.patchWithRetryFor("/api/v3/checkrunner/", payload, pkgRetryWait, checkResultLimit); err != nil {
 		a.Logger.Debugln("check result:", err)
 	}
 }

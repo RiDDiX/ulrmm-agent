@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -446,6 +447,70 @@ func TestSendCheckResultRepeatedAfterTimeout(t *testing.T) {
 		if id != ids[0] || id == "" {
 			t.Fatalf("result_id per call: %q", ids)
 		}
+	}
+}
+
+// A result is not sent again once the limit has passed since the first try,
+// also when the wait between the tries covered a suspend.
+func TestSendCheckResultLimit(t *testing.T) {
+	wait, limit := pkgRetryWait, checkResultLimit
+	pkgRetryWait, checkResultLimit = time.Millisecond, time.Nanosecond
+	t.Cleanup(func() { pkgRetryWait, checkResultLimit = wait, limit })
+	var calls atomic.Int32
+	a := apiAgent(t, func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	})
+	a.sendCheckResult(CPUMemResult{resultHead: a.checkHead(rmm.CheckDef{CheckID: 3}), Pct: 7})
+	if calls.Load() != 1 {
+		t.Fatalf("%d calls, want 1", calls.Load())
+	}
+}
+
+// On Windows the runner child moves its deadline past the longest script
+// check once it has fetched the checks; the budget alone would end the run.
+// A deadline that passes while the script runs still ends it.
+func TestRunChecksRunnerDeadlineReset(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("script uses /bin/sh")
+	}
+	goos, tick, exit := runnerGOOS, runnerTick, runnerExit
+	t.Cleanup(func() { runnerGOOS, runnerTick, runnerExit = goos, tick, exit })
+	for _, c := range []struct {
+		name string
+		tick time.Duration
+		exit bool
+	}{
+		// budget 0.6 s, deadline after the fetch 3.57 s, script 1 s
+		{"reset", time.Millisecond, false},
+		// budget 0.06 s, deadline after the fetch 0.357 s, script 1 s
+		{"fires", 100 * time.Microsecond, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var exited atomic.Bool
+			runnerGOOS, runnerTick, runnerExit = "windows", c.tick, func() { exited.Store(true) }
+			var results atomic.Int32
+			a := apiAgent(t, func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/api/v3/agent1/runchecks/":
+					io.WriteString(w, `{"agent": 1, "check_interval": 120, "checks": [
+				{"id": 4, "check_type": "script", "timeout": 3480, "script": {"shell": "shell", "code": "#!/bin/sh\nsleep 1\necho done"}}]}`)
+				case r.Method == http.MethodPatch && r.URL.Path == "/api/v3/checkrunner/":
+					var m map[string]interface{}
+					json.NewDecoder(r.Body).Decode(&m)
+					if out, _ := m["stdout"].(string); m["id"] == 4.0 && m["retcode"] == 0.0 && strings.Contains(out, "done") {
+						results.Add(1)
+					}
+				}
+			})
+			if err := a.RunChecks(true); err != nil {
+				t.Fatal(err)
+			}
+			if exited.Load() != c.exit || results.Load() != 1 {
+				t.Fatalf("exit called %v, results %d", exited.Load(), results.Load())
+			}
+		})
 	}
 }
 
