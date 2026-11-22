@@ -464,6 +464,13 @@ func (r *rpcReq) run() {
 	case "publicip":
 		r.reply(a.PublicIP())
 
+	case "imagingpoll":
+		// This only wakes the authenticated HTTPS poll. RPC supplies no source,
+		// destination, artifact, or credential.
+		select {
+		case imagingWake <- struct{}{}:
+		default:
+		}
 	case "runchecks":
 		if a.ChecksRunning() {
 			r.reply("busy")
@@ -738,6 +745,12 @@ func (a *Agent) rpcAgentUpdate(r *rpcReq) {
 	}
 	// also after a recovered panic; the success path ends in os.Exit
 	defer updateRunning.Store(false)
+	if imagingBusy.Load() {
+		// The restart would interrupt a native capture; the next update request installs it.
+		a.Logger.Infoln("AgentUpdate(): deferred while native imaging runs")
+		r.reply("imagingbusy")
+		return
+	}
 	r.reply("ok")
 	p := r.p
 	inno, link, version, sha := p.Data["inno"], p.Data["url"], p.Data["version"], p.updateSha256()

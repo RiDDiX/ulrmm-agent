@@ -44,6 +44,13 @@ func (s *secondsFlag) Set(v string) error {
 }
 
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "imaging-fetch" || os.Args[1] == "imaging-capture") {
+		if err := agent.ImagingCommand(os.Args[1], os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	installTimeout := secondsFlag(900 * time.Second)
 	var (
 		ver        = flag.Bool("version", false, "print the version and exit")
@@ -147,6 +154,11 @@ func main() {
 	}
 
 	switch *mode {
+	case "imaging":
+		if err := a.RunImaging(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	case "installsvc":
 		if err := a.InstallService(); err != nil {
 			log.Errorln("InstallService():", err)

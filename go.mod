@@ -28,6 +28,7 @@ require (
 	github.com/nats-io/nkeys v0.4.9
 	golang.org/x/crypto v0.58.0
 	golang.org/x/text v0.43.0
+	howett.net/plist v1.0.0
 )
 
 require (
@@ -61,5 +62,4 @@ require (
 	golang.org/x/sync v0.24.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
-	howett.net/plist v1.0.0 // indirect
 )

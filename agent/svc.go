@@ -233,6 +233,9 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 	patchTicker := time.NewTicker(patchRearmEvery)
 
 	go a.guard("SelfHealSetup", a.SelfHealSetup)
+	if runtime.GOOS == "windows" || runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
+		go a.imagingLoop()
+	}
 	if win {
 		go a.driversLoop(conf.Drivers)
 	}

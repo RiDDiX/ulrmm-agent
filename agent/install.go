@@ -112,7 +112,7 @@ func (a *Agent) Install(i *Installer) {
 		return
 	}
 	if r.StatusCode() == 401 && i.Enroll != "" {
-		fail("The server refused the enrollment data: the deployment has expired or was deleted.")
+		fail("The server refused enrollment. Check that the signed deployment is valid and the server has an active installer user.")
 		return
 	}
 	if r.StatusCode() == 401 {
