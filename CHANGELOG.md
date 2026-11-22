@@ -1,5 +1,14 @@
 # Agent changelog
 
+## 1.22.11.2026 (2026-11-22)
+
+- native backup: reports what Windows, Linux and macOS support, uploads scoped blocks and fetches recovery artifacts
+- native backup: uploads and recovery downloads retry temporary errors, and a stopped download continues on the next run; failed polls back off up to 6 hours; a Windows staging set left by a stopped or failed backup is cleared; macOS mounts its backup disk again after an interrupted capture; an agent update waits while a capture runs
+- native backup: a hung disk tool on macOS or Windows times out instead of stopping backups and agent updates for good; a download does not continue from a partial file that another user can write; a Windows staging set left by an interrupted cleanup is cleared
+- native backup: Linux accepts stock Debian and Ubuntu fstab files (by-uuid links, labels, swap files, noauto drives); a label several partitions share is refused only where fstab uses it
+- native backup: Windows archives start large files on the server's block grid, so the next backup stores only what changed
+- imaging-fetch: a refusal shows the server's reason; "run the same command again" is shown only after network or server errors
+
 ## 2.20.11.2026 (2026-11-20)
 
 - self-repair: a repair downloads and stages its files under names of its own, so two repairs at the same moment no longer overwrite each other's files; files left by an interrupted repair are removed at service start
