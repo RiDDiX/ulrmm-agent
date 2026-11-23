@@ -1,5 +1,9 @@
 # Agent changelog
 
+## 1.23.11.2026 (2026-11-23)
+
+- native backup, Linux: mounts on other disks, network shares and swap on other disks are left out of the system disk image and listed as not included instead of blocking the backup; `/`, a separate `/boot` and the EFI partition must be on the system disk
+
 ## 1.22.11.2026 (2026-11-22)
 
 - native backup: reports what Windows, Linux and macOS support, uploads scoped blocks and fetches recovery artifacts
