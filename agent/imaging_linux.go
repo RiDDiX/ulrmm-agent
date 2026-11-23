@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -27,12 +28,13 @@ const linuxDiskIDs = "/dev/disk/by-id"
 
 var linuxDiskIDPattern = regexp.MustCompile(`^(ata|nvme|scsi|usb|virtio|wwn)-[A-Za-z0-9_.:+-]+$`)
 var linuxUUIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+var linuxImagingRequired = []string{"/", "/boot", "/boot/efi", "/efi"}
 
 func linuxImagingHost() (ImagingCapability, bool, error) {
 	capability := ImagingCapability{
 		Method: linuxImagingMethod, Encryption: "unknown",
 		Scope:    "Whole system disk, including the partition table, ext4 root, bootloader and EFI partition",
-		Recovery: "Boot trusted ULRMM Linux recovery media. Restore on a blank disk of equal capacity and sector size, in the original UEFI mode.",
+		Recovery: "Boot trusted ULRMM Linux recovery media. Restore on a blank disk of equal capacity and sector size, in the original UEFI mode. Mounts on other disks are not in the image; on other hardware attach those disks or mark their fstab entries nofail.",
 	}
 	if runtime.GOARCH != "amd64" {
 		return capability, false, errors.New("Linux disk imaging requires x86-64")
@@ -175,17 +177,21 @@ func linuxRunningImagingInventory(ctx context.Context, capability *ImagingCapabi
 	if err != nil {
 		return fmt.Errorf("read the source system's fstab: %w", err)
 	}
-	if err := linuxImagingFstab(source.Children, sourceRoot.Name, string(fstab)); err != nil {
+	excluded, err := linuxImagingFstab(source.Children, sourceRoot.Name, string(fstab))
+	if err != nil {
 		return err
 	}
 	for _, disk := range disks {
-		if disk.Name == source.Name {
+		// A loop device holds a file whose own mount decides whether it is in the
+		// image, and compressed RAM swap holds no disk.
+		if disk.Name == source.Name || disk.Type == "loop" || strings.HasPrefix(disk.Name, "/dev/zram") {
 			continue
 		}
-		if linuxImagingHasMount(disk) {
-			return errors.New("Another local disk has mounted filesystems or swap")
+		if excluded, err = linuxImagingMounts(disk, excluded); err != nil {
+			return err
 		}
 	}
+	capability.Scope += linuxImagingNotIncluded(excluded)
 	ids, err := os.ReadDir(linuxDiskIDs)
 	if err != nil {
 		return err
@@ -213,9 +219,12 @@ func linuxRunningImagingInventory(ctx context.Context, capability *ImagingCapabi
 	return errors.New("The Linux system disk has no supported stable /dev/disk/by-id identifier")
 }
 
-func linuxImagingFstab(parts []linuxImagingBlock, root, fstab string) error {
+// linuxImagingFstab returns the fstab mounts the system disk image does not hold.
+func linuxImagingFstab(parts []linuxImagingBlock, root, fstab string) ([]string, error) {
 	ids := make(map[string]linuxImagingBlock)
 	for _, part := range parts {
+		// Kernel names change on other hardware, so a system disk partition named that way is refused.
+		ids[part.Name+"="] = linuxImagingBlock{}
 		for prefix, value := range map[string]string{
 			"UUID=": strings.ToLower(part.UUID), "PARTUUID=": strings.ToLower(part.PartUUID),
 			"LABEL=": part.Label, "PARTLABEL=": part.PartLabel,
@@ -226,7 +235,7 @@ func linuxImagingFstab(parts []linuxImagingBlock, root, fstab string) error {
 			key := prefix + value
 			if _, ok := ids[key]; ok {
 				if strings.HasSuffix(prefix, "UUID=") {
-					return errors.New("Linux system disk has ambiguous partition identifiers")
+					return nil, errors.New("Linux system disk has ambiguous partition identifiers")
 				}
 				// A label several partitions share is refused only where fstab uses it.
 				ids[key] = linuxImagingBlock{}
@@ -235,6 +244,15 @@ func linuxImagingFstab(parts []linuxImagingBlock, root, fstab string) error {
 			ids[key] = part
 		}
 	}
+	// a mount point a system disk partition holds right now is in the image,
+	// whatever link fstab names it by
+	system := make(map[string]bool)
+	for _, part := range parts {
+		for _, mount := range part.Mounts {
+			system[mount] = true
+		}
+	}
+	var excluded []string
 	mounts := make(map[string]linuxImagingBlock)
 	for _, line := range strings.Split(fstab, "\n") {
 		entry, _, _ := strings.Cut(line, "#")
@@ -243,7 +261,7 @@ func linuxImagingFstab(parts []linuxImagingBlock, root, fstab string) error {
 			continue
 		}
 		if len(fields) < 4 {
-			return errors.New("Linux system has an unsupported fstab entry")
+			return nil, errors.New("Linux system has an unsupported fstab entry")
 		}
 		switch fields[2] {
 		case "proc", "sysfs", "devpts", "tmpfs":
@@ -258,6 +276,17 @@ func linuxImagingFstab(parts []linuxImagingBlock, root, fstab string) error {
 			(fields[2] == "swap" && strings.HasPrefix(fields[0], "/") && !strings.HasPrefix(fields[0], "/dev/")) {
 			continue
 		}
+		// mount and systemd clean the path, so "/boot/" is /boot
+		point := fields[1]
+		if strings.HasPrefix(point, "/") {
+			point = path.Clean(point)
+		}
+		required := slices.Contains(linuxImagingRequired, point)
+		// bind mounts and pseudo file systems hold no disk of their own
+		if !required && (slices.Contains(opts, "bind") || slices.Contains(opts, "rbind") ||
+			!strings.ContainsAny(fields[0], "/=")) {
+			continue
+		}
 		source := fields[0]
 		if link, ok := strings.CutPrefix(source, "/dev/disk/by-"); ok {
 			if kind, value, ok := strings.Cut(link, "/"); ok {
@@ -268,28 +297,38 @@ func linuxImagingFstab(parts []linuxImagingBlock, root, fstab string) error {
 		if strings.HasSuffix(prefix, "UUID") {
 			value = strings.ToLower(value)
 		}
-		part := ids[prefix+"="+value]
-		if _, mounted := mounts[fields[1]]; part.Name == "" || mounted || part.FSType != fields[2] {
-			return fmt.Errorf("Linux fstab mount %s does not identify a supported partition on the system disk", fields[1])
+		part, onDisk := ids[prefix+"="+value]
+		if !onDisk && !required {
+			if system[point] {
+				continue
+			}
+			if fields[2] == "swap" {
+				point = "swap"
+			}
+			excluded = linuxImagingExclude(excluded, point, fields[0])
+			continue
+		}
+		if _, mounted := mounts[point]; part.Name == "" || mounted || part.FSType != fields[2] {
+			return nil, fmt.Errorf("Linux fstab mount %s does not identify a supported partition on the system disk", point)
 		}
 		if fields[2] != "swap" {
-			mounts[fields[1]] = part
+			mounts[point] = part
 		}
 	}
 	if mounts["/"].Name != root {
-		return errors.New("Linux fstab must identify the ext4 root partition")
+		return nil, errors.New("Linux fstab must identify the ext4 root partition")
 	}
 	if boot, ok := mounts["/boot"]; ok && boot.FSType != "ext4" {
-		return errors.New("A separate /boot must use ext4 on the Linux system disk")
+		return nil, errors.New("A separate /boot must use ext4 on the Linux system disk")
 	}
 	efi, ok := mounts["/boot/efi"]
 	if !ok {
 		efi = mounts["/efi"]
 	}
 	if efi.FSType != "vfat" || efi.PartType != "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" {
-		return errors.New("Linux fstab must identify the FAT EFI system partition on the system disk")
+		return nil, errors.New("Linux fstab must identify the FAT EFI system partition on the system disk")
 	}
-	return nil
+	return excluded, nil
 }
 
 func linuxImagingRoot(block *linuxImagingBlock) *linuxImagingBlock {
@@ -306,18 +345,56 @@ func linuxImagingRoot(block *linuxImagingBlock) *linuxImagingBlock {
 	return nil
 }
 
-func linuxImagingHasMount(block linuxImagingBlock) bool {
+// linuxImagingMounts adds the mounts of a disk other than the system disk to the excluded list.
+func linuxImagingMounts(block linuxImagingBlock, excluded []string) ([]string, error) {
 	for _, mount := range block.Mounts {
+		if slices.Contains(linuxImagingRequired, mount) {
+			return nil, fmt.Errorf("Linux mount %s is not on the system disk", mount)
+		}
 		if mount != "" {
-			return true
+			excluded = linuxImagingExclude(excluded, mount, block.Name)
 		}
 	}
+	var err error
 	for _, child := range block.Children {
-		if linuxImagingHasMount(child) {
-			return true
+		if excluded, err = linuxImagingMounts(child, excluded); err != nil {
+			return nil, err
 		}
 	}
-	return false
+	return excluded, nil
+}
+
+func linuxImagingExclude(excluded []string, point, source string) []string {
+	if point == "[SWAP]" {
+		point = "swap"
+	}
+	if slices.ContainsFunc(excluded, func(entry string) bool { return strings.HasPrefix(entry, point+" (") }) {
+		return excluded
+	}
+	return append(excluded, point+" ("+source+")")
+}
+
+func linuxImagingNotIncluded(excluded []string) string {
+	if len(excluded) == 0 {
+		return ""
+	}
+	// the server keeps at most 2048 characters of scope
+	var shown []string
+	length := 0
+	for _, entry := range excluded {
+		if runes := []rune(entry); len(runes) > 160 {
+			entry = string(runes[:157]) + "..."
+		}
+		if len(shown) == 8 || length+len(entry) > 1200 {
+			break
+		}
+		shown = append(shown, entry)
+		length += len(entry) + 2
+	}
+	if more := len(excluded) - len(shown); more > 0 {
+		shown = append(shown, fmt.Sprintf("and %d more", more))
+	}
+	return ". Not included: " + strings.Join(shown, ", ") + "."
 }
 
 func imagingRecoveryCapability(ctx context.Context, diskID string) (ImagingCapability, error) {
