@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -167,7 +168,11 @@ func (t *imagingTransfer) upload(ctx context.Context, m imagingManifest, source 
 		}
 		raw := buf[:n]
 		h := sha256.Sum256(raw)
-		sum.Write(raw)
+		if m.Native.Method == linuxFilesMethod {
+			sum.Write(h[:])
+		} else {
+			sum.Write(raw)
+		}
 		path := fmt.Sprintf("part/?i=%d&size=%d&sha256=%x", index, n, h)
 		_, status, err := t.requestRetry(ctx, "POST", path, nil, "")
 		if status == http.StatusNotFound {
@@ -202,7 +207,12 @@ func (t *imagingTransfer) upload(ctx context.Context, m imagingManifest, source 
 		size += int64(n)
 	}
 	digest := hex.EncodeToString(sum.Sum(nil))
-	seal, _ := json.Marshal(map[string]any{"sha256": digest, "size": size})
+	fields := map[string]any{}
+	if s, ok := source.(interface{ SealFields() map[string]any }); ok {
+		maps.Copy(fields, s.SealFields())
+	}
+	fields["sha256"], fields["size"] = digest, size
+	seal, _ := json.Marshal(fields)
 	_, _, err := t.requestRetry(ctx, "POST", "seal/", seal, "application/json")
 	if err != nil {
 		// A connection can disappear after the server commits the manifest.
@@ -214,6 +224,10 @@ func (t *imagingTransfer) upload(ctx context.Context, m imagingManifest, source 
 	return err
 }
 func (t *imagingTransfer) fetch(ctx context.Context, m imagingManifest, path string) error {
+	// Its digest covers block digests, not the stream this would write.
+	if m.Native.Method == linuxFilesMethod {
+		return errors.New("restore this point with the ULRMM recovery helper")
+	}
 	// The digest also names the partial file, so it must be plain hex.
 	if _, err := hex.DecodeString(m.Hash); m.Status != "verified" || m.Size <= 0 || len(m.Hash) != 64 || err != nil {
 		return errors.New("the selected recovery point has no verified manifest")

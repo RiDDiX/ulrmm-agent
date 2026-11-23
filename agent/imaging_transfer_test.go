@@ -327,3 +327,65 @@ func TestAgentUpdateWaitsForNativeImaging(t *testing.T) {
 		t.Fatalf("busy while polling %v, busy after %v, released claim %v", polledBusy, imagingBusy.Load(), released)
 	}
 }
+
+type sealedSource struct{ io.Reader }
+
+func (sealedSource) SealFields() map[string]any {
+	return map[string]any{"index": map[string]int{"offset": 7, "size": 9}, "sha256": "not this"}
+}
+
+func TestImagingSealsLinuxFilesWithBlockListDigest(t *testing.T) {
+	raw := append(append(bytes.Repeat([]byte{1}, imagingBlock), bytes.Repeat([]byte{2}, imagingBlock)...), "tail"...)
+	var mu sync.Mutex
+	var seal map[string]any
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case r.URL.Path == "/part/" && r.Method == "POST":
+			w.WriteHeader(http.StatusNotFound)
+		case r.URL.Path == "/seal/":
+			json.NewDecoder(r.Body).Decode(&seal)
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			// read the block like the server does; the client reuses its buffer
+			io.Copy(io.Discard, r.Body)
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer server.Close()
+	tr := imagingTransfer{grant: imagingGrant{URL: server.URL + "/", Token: "test", Mode: "internet", Image: "point"}, client: server.Client()}
+	list := sha256.New()
+	for i := 0; i < len(raw); i += imagingBlock {
+		block := sha256.Sum256(raw[i:min(i+imagingBlock, len(raw))])
+		list.Write(block[:])
+	}
+	for method, want := range map[string]string{linuxFilesMethod: fmt.Sprintf("%x", list.Sum(nil)), "linux-offline-disk-v1": fmt.Sprintf("%x", sha256.Sum256(raw))} {
+		m := imagingManifest{Image: "point", Agent: "agent", Disk: "disk", Direction: "capture", Mode: "internet", Codec: "none", Native: ImagingCapability{Method: method}}
+		if err := tr.upload(context.Background(), m, sealedSource{bytes.NewReader(raw)}); err != nil {
+			t.Fatal(err)
+		}
+		mu.Lock()
+		index, _ := seal["index"].(map[string]any)
+		if seal["sha256"] != want || seal["size"] != float64(len(raw)) || index["offset"] != float64(7) {
+			t.Fatalf("%s sealed %v", method, seal)
+		}
+		mu.Unlock()
+	}
+}
+
+func TestImagingFetchRefusesLinuxFilesPoints(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("fetch sent %s %s", r.Method, r.URL)
+	}))
+	defer server.Close()
+	tr := imagingTransfer{grant: imagingGrant{URL: server.URL + "/", Token: "test"}, client: server.Client()}
+	m := imagingManifest{Status: "verified", Size: 10, Hash: strings.Repeat("ab", 32), Native: ImagingCapability{Method: linuxFilesMethod}}
+	path := filepath.Join(t.TempDir(), "disk")
+	if err := tr.fetch(context.Background(), m, path); err == nil || err.Error() != "restore this point with the ULRMM recovery helper" {
+		t.Fatalf("fetch of a files point: %v", err)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatal("fetch created output")
+	}
+}

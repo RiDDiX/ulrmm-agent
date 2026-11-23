@@ -59,3 +59,28 @@ func TestWriteAlignedHeaderStartsLargeFilesOnTheBlockGrid(t *testing.T) {
 		}
 	}
 }
+
+func TestWriteAnchoredHeaderEndsSmallHeadersOnTheBlockGrid(t *testing.T) {
+	for _, lead := range []int{0, 1, 776, 519680, imagingBlock - 700} {
+		var out bytes.Buffer
+		written := &tarCounter{w: &out}
+		archive := tar.NewWriter(written)
+		if err := archive.WriteHeader(&tar.Header{Name: "lead", Mode: 0o600, Size: int64(lead), Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		archive.Write(bytes.Repeat([]byte{'l'}, lead))
+		start, err := writeAnchoredHeader(archive, written, &tar.Header{Name: "v/root/small", Mode: 0o600, Size: 5, Typeflag: tar.TypeReg, Format: tar.FormatPAX})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if written.n%imagingBlock != 0 {
+			t.Fatalf("lead %d: header ends at %d", lead, written.n)
+		}
+		archive.Write([]byte("small"))
+		archive.Close()
+		h, err := tar.NewReader(bytes.NewReader(out.Bytes()[start:])).Next()
+		if err != nil || h.Name != "v/root/small" {
+			t.Fatalf("lead %d: offset %d holds %v (%v)", lead, start, h, err)
+		}
+	}
+}

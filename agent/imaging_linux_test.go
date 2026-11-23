@@ -176,7 +176,7 @@ func TestLinuxImagingAgentReport(t *testing.T) {
 	}
 	ctx := context.Background()
 	capability := nativeImagingCapability(ctx)
-	if capability.SourceID != disk || capability.Ready {
+	if capability.SourceID != disk || capability.Ready != (capability.Method == linuxFilesMethod) {
 		t.Fatalf("unexpected installed-system backup capability: %+v", capability)
 	}
 	if err := New(logrus.New(), "qa").imagingPoll(ctx, capability); err != nil {

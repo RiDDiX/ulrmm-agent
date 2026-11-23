@@ -77,6 +77,10 @@ func (a *Agent) imagingPoll(ctx context.Context, capability ImagingCapability) e
 		}()
 		phase = "upload"
 		if err := t.upload(ctx, m, stream); err != nil {
+			var failed *imagingStreamError
+			if errors.As(err, &failed) {
+				phase = "capture"
+			}
 			return err
 		}
 		if staged, ok := stream.(interface{ Finish() error }); ok {

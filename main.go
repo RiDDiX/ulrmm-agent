@@ -51,6 +51,13 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "imaging-stream" {
+		if err := agent.ImagingStreamCommand(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	installTimeout := secondsFlag(900 * time.Second)
 	var (
 		ver        = flag.Bool("version", false, "print the version and exit")

@@ -33,6 +33,22 @@ func writeAlignedHeader(archive *tar.Writer, written *tarCounter, header *tar.He
 	if header.Size < imagingBlock {
 		return archive.WriteHeader(header)
 	}
+	_, err := writeAnchoredHeader(archive, written, header)
+	return err
+}
+
+// tarHeaderSize is the number of bytes WriteHeader emits for header, or -1.
+func tarHeaderSize(header *tar.Header) int64 {
+	var buf bytes.Buffer
+	if tar.NewWriter(&buf).WriteHeader(header) != nil {
+		return -1
+	}
+	return int64(buf.Len())
+}
+
+// writeAnchoredHeader ends header on the block grid whatever the member size
+// and returns the offset of the member's own header after any gap headers.
+func writeAnchoredHeader(archive *tar.Writer, written *tarCounter, header *tar.Header) (int64, error) {
 	padded := func(pad int) *tar.Header {
 		h := *header
 		h.PAXRecords = maps.Clone(header.PAXRecords)
@@ -43,26 +59,20 @@ func writeAlignedHeader(archive *tar.Writer, written *tarCounter, header *tar.He
 		h.PAXRecords["comment"] = strings.Repeat("x", pad)
 		return &h
 	}
-	size := func(pad int) int64 {
-		var buf bytes.Buffer
-		if tar.NewWriter(&buf).WriteHeader(padded(pad)) != nil {
-			return -1
-		}
-		return int64(buf.Len())
-	}
+	size := func(pad int) int64 { return tarHeaderSize(padded(pad)) }
 	gap := &tar.Header{Typeflag: tar.TypeXGlobalHeader, PAXRecords: map[string]string{"comment": strings.Repeat("x", tarPadStep)}}
 	var wire bytes.Buffer
 	if err := tar.NewWriter(&wire).WriteHeader(gap); err != nil {
-		return err
+		return 0, err
 	}
 	for {
 		if err := archive.Flush(); err != nil {
-			return err
+			return 0, err
 		}
 		need := (written.n+size(1)+imagingBlock-1)/imagingBlock*imagingBlock - written.n
 		if need-size(1) >= int64(wire.Len()) {
 			if err := archive.WriteHeader(gap); err != nil {
-				return err
+				return 0, err
 			}
 			continue
 		}
@@ -72,6 +82,7 @@ func writeAlignedHeader(archive *tar.Writer, written *tarCounter, header *tar.He
 		if size(pad) == need {
 			header = padded(pad)
 		}
-		return archive.WriteHeader(header)
+		start := written.n
+		return start, archive.WriteHeader(header)
 	}
 }

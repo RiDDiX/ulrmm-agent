@@ -13,3 +13,7 @@ import (
 func imagingRecoveryCapability(context.Context, string) (ImagingCapability, error) {
 	return ImagingCapability{}, errors.New("offline native capture requires Linux rescue")
 }
+
+func ImagingStreamCommand([]string) error {
+	return errors.New("live file backup requires Linux")
+}

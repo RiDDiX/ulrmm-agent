@@ -76,13 +76,19 @@ type linuxImagingBlock struct {
 	Size       int64
 	SectorSize int      `json:"log-sec"`
 	Mounts     []string `json:"mountpoints"`
+	Start      int64
+	PartN      int
+	PTUUID     string
+	PartFlags  string
 	Children   []linuxImagingBlock
 }
 
-func linuxImagingBlocks(ctx context.Context, paths ...string) ([]linuxImagingBlock, error) {
+// linuxImagingBlocks lists block devices; extra adds columns older lsblk
+// versions may not know.
+func linuxImagingBlocks(ctx context.Context, extra string, paths ...string) ([]linuxImagingBlock, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	args := []string{"--json", "--bytes", "--paths", "--output", "NAME,TYPE,FSTYPE,PARTTYPE,PTTYPE,UUID,PARTUUID,LABEL,PARTLABEL,SIZE,LOG-SEC,MOUNTPOINTS"}
+	args := []string{"--json", "--bytes", "--paths", "--output", "NAME,TYPE,FSTYPE,PARTTYPE,PTTYPE,UUID,PARTUUID,LABEL,PARTLABEL,SIZE,LOG-SEC,MOUNTPOINTS" + extra}
 	output, err := exec.CommandContext(ctx, "lsblk", append(args, paths...)...).Output()
 	if err != nil {
 		return nil, fmt.Errorf("inspect Linux disk layout: %w", err)
@@ -126,8 +132,12 @@ func nativeImagingCapability(ctx context.Context) ImagingCapability {
 	capability, recovery, err := linuxImagingHost()
 	if err == nil && recovery {
 		err = errors.New("Select the authorized source disk in the ULRMM recovery command")
-	} else if err == nil {
-		err = linuxRunningImagingInventory(ctx, &capability)
+	} else if err == nil || !linuxRecoveryBoot() {
+		live := linuxFilesCurrent(ctx).ImagingCapability
+		if !live.Ready && err == nil {
+			err = linuxRunningImagingInventory(ctx, &capability)
+		}
+		return linuxFilesChoice(live, capability, err)
 	}
 	if err != nil {
 		capability.Reason = err.Error()
@@ -136,7 +146,7 @@ func nativeImagingCapability(ctx context.Context) ImagingCapability {
 }
 
 func linuxRunningImagingInventory(ctx context.Context, capability *ImagingCapability) error {
-	disks, err := linuxImagingBlocks(ctx)
+	disks, err := linuxImagingBlocks(ctx, "")
 	if err != nil {
 		return err
 	}
@@ -205,11 +215,8 @@ func linuxRunningImagingInventory(ctx context.Context, capability *ImagingCapabi
 			capability.SourceID, capability.Size, capability.SectorSize = id.Name(), source.Size, source.SectorSize
 			capability.Encryption = "unencrypted source"
 			if release, err := os.ReadFile("/etc/os-release"); err == nil {
-				for _, line := range strings.Split(string(release), "\n") {
-					if name, ok := strings.CutPrefix(line, "PRETTY_NAME="); ok {
-						capability.Scope = strings.Trim(name, "\"") + ". " + capability.Scope
-						break
-					}
+				if name := linuxOSRelease(string(release), "PRETTY_NAME"); name != "" {
+					capability.Scope = name + ". " + capability.Scope
 				}
 			}
 			capability.Reason = "No supported whole-disk snapshot for this layout. Shut down Linux cleanly and boot ULRMM recovery media to capture the system disk."
@@ -412,7 +419,7 @@ func imagingRecoveryCapability(ctx context.Context, diskID string) (ImagingCapab
 	if err != nil {
 		return capability, err
 	}
-	disks, err := linuxImagingBlocks(ctx, device)
+	disks, err := linuxImagingBlocks(ctx, "", device)
 	if err != nil {
 		return capability, err
 	}
@@ -428,6 +435,9 @@ func imagingRecoveryCapability(ctx context.Context, diskID string) (ImagingCapab
 }
 
 func nativeImagingCapture(ctx context.Context, expected ImagingCapability) (io.ReadCloser, error) {
+	if expected.Method == linuxFilesMethod {
+		return startLinuxFiles(ctx, expected)
+	}
 	actual, err := imagingRecoveryCapability(ctx, expected.SourceID)
 	if err != nil {
 		return nil, err

@@ -5,6 +5,8 @@ package agent
 
 import "context"
 
+const linuxFilesMethod = "linux-files-v1"
+
 // ImagingCapability describes the local backup source and the procedure needed
 // to recover it. Size describes the recovery disk and can differ from the stream.
 type ImagingCapability struct {
@@ -21,4 +23,27 @@ type ImagingCapability struct {
 	SectorSize           int                                         `json:"sector_size"`
 	DeviceUUID           string                                      `json:"device_uuid"`
 	BootMode             string                                      `json:"boot_mode"`
+	Volumes              []ImagingVolume                             `json:"volumes,omitempty"`
+	MinTargetSize        int64                                       `json:"min_target_size,omitempty"`
+	// Set by the server in a grant manifest (image.native), never reported.
+	Include []string `json:"include,omitempty"`
+	Missing []string `json:"missing,omitempty"`
 }
+
+type ImagingVolume struct {
+	ID          string `json:"id"`
+	Mount       string `json:"mount"`
+	FS          string `json:"fs"`
+	Kind        string `json:"kind"`
+	Disk        string `json:"disk"`
+	Size        int64  `json:"size"`
+	Used        int64  `json:"used"`
+	Consistency string `json:"consistency"`
+	Reason      string `json:"reason"`
+}
+
+// imagingStreamError ends a capture whose stream source failed, so the point
+// is reported as a capture failure and never sealed.
+type imagingStreamError struct{ reason string }
+
+func (e *imagingStreamError) Error() string { return "imaging stream failed: " + e.reason }
