@@ -25,7 +25,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -702,19 +701,24 @@ func TestLinuxFilesWalkErrors(t *testing.T) {
 	if err := unix.Getrlimit(unix.RLIMIT_NOFILE, &limit); err != nil {
 		t.Fatal(err)
 	}
-	fds, _ := os.ReadDir("/proc/self/fd")
-	highest := 0
-	for _, fd := range fds {
-		if n, _ := strconv.Atoi(fd.Name()); n > highest {
-			highest = n
-		}
+	// a descriptor far above the others, as a connection left by another test
+	null, err := unix.Open("/dev/null", unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
 	}
+	if err := unix.Dup3(null, 900, unix.O_CLOEXEC); err != nil {
+		t.Fatal(err)
+	}
+	unix.Close(null)
+	defer unix.Close(900)
+	// new descriptors take the lowest free numbers, so the limit counts the open ones
+	fds, _ := os.ReadDir("/proc/self/fd")
 	low := limit
-	low.Cur = uint64(highest + 4)
+	low.Cur = uint64(len(fds) + 4)
 	if err := unix.Setrlimit(unix.RLIMIT_NOFILE, &low); err != nil {
 		t.Fatal(err)
 	}
-	_, err := writeLinuxFiles(io.Discard, []byte(`{}`), []linuxFilesView{{"root", dir}}, nil)
+	_, err = writeLinuxFiles(io.Discard, []byte(`{}`), []linuxFilesView{{"root", dir}}, nil)
 	unix.Setrlimit(unix.RLIMIT_NOFILE, &limit)
 	if !errors.Is(err, unix.EMFILE) || !strings.HasPrefix(err.Error(), "read v/root/d/d/") {
 		t.Fatalf("walk without file descriptors: %v", err)
