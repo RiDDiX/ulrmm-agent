@@ -1,5 +1,10 @@
 # Agent changelog
 
+## 2.23.11.2026 (2026-11-23)
+
+- native backup, Linux: live backup without a reboot; the system volumes and the extra volumes picked on the server are read file by file and streamed on the block grid, so unchanged data is not sent again
+- native backup, Linux: the agent reports its volumes with kind and reason; a live point is restored with the recovery helper, not by the agent
+
 ## 1.23.11.2026 (2026-11-23)
 
 - native backup, Linux: mounts on other disks, network shares and swap on other disks are left out of the system disk image and listed as not included instead of blocking the backup; `/`, a separate `/boot` and the EFI partition must be on the system disk
