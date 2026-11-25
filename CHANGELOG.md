@@ -1,5 +1,20 @@
 # Agent changelog
 
+## 1.24.11.2026 (2026-11-24)
+
+- native backup: fetches its backup settings over the sealed channel, checks them and acknowledges each version; a refused version keeps the previous settings with automatic setup off and is checked again on each poll
+- native backup: a settings version whose sealed answer the agent cannot verify (enrolment key of another server, unsealed answer) is reported as refused with the reason instead of staying pending; the fetch is tried again with a growing wait of up to 6 hours, and at once after a wake-up from the server whose seal verifies again
+- native backup: reports readiness checks; on Windows automatic setup `safe` or `all` sets a disabled VSS or swprv service to Manual, on Linux missing tools are reported with the install command of the package manager found
+- native backup: runs hooks before and after the backup and the snapshot as root or SYSTEM; after a cancel the before hooks that have not started are skipped, the after hooks always run; at a service stop the agent waits 6 seconds for them and reports the run within 3 more seconds, and the script of a hook still running then is left running. A hook whose script does not match its approved hash is not run and is reported as failed
+- native backup: reports step, progress, log and warnings every 5 seconds and stops a run on cancel from the dashboard
+- native backup: pauses on network loss and on battery up to the pause limit, waits for AC power before a backup when set, limits the upload by weekly bandwidth rules, keeps the device awake during a run, checks SMART before the backup and reports agent start and AC power events
+- native backup: checks up to 16 blocks per request against the stored ones before it uploads the missing ones
+- native backup, Linux: with priority background the file reader runs at nice 10; it ends when the agent process ends
+
+### Changes in behaviour
+
+- from a server that sends backup settings, imaging answers are accepted only sealed; after a rollback to an older server the agent accepts its grants again 24 hours after the last answer of the newer server, or at once after a service restart
+
 ## 2.23.11.2026 (2026-11-23)
 
 - native backup, Linux: live backup without a reboot; the system volumes and the extra volumes picked on the server are read file by file and streamed on the block grid, so unchanged data is not sent again
