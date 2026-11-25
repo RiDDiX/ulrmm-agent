@@ -8,8 +8,6 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -19,6 +17,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"time"
 )
@@ -52,30 +51,23 @@ type imagingTransfer struct {
 	grant  imagingGrant
 	client *http.Client
 	retry  time.Duration
+	// set for a protocol-2 run: batch parts, throttle, network pause
+	run *imagingRun
 }
 
-func openImaging(g imagingGrant, iface, ca string) (*imagingTransfer, error) {
+// openImaging uses the agent's TLS setup (pins and client certificate for the
+// RMM host, the custom CA) and, in internet mode, its proxy.
+func openImaging(g imagingGrant, iface string, a *Agent) (*imagingTransfer, error) {
 	u, e := url.Parse(g.URL)
 	if e != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || !strings.HasPrefix(u.Path, "/imaging/transfers/") || !strings.HasSuffix(u.Path, "/") || g.Token == "" {
 		return nil, errors.New("invalid HTTPS imaging grant")
 	}
+	if a.Cert != "" && a.rmmRoots() == nil {
+		return nil, errors.New("invalid imaging CA bundle")
+	}
 	// Internal connections stay bound to the verified tunnel interface, so a
 	// reused connection cannot move to another route.
-	tr := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}, DisableCompression: true, IdleConnTimeout: 90 * time.Second}
-	if ca != "" {
-		roots, err := x509.SystemCertPool()
-		if err != nil {
-			return nil, err
-		}
-		pem, err := os.ReadFile(ca)
-		if err != nil {
-			return nil, err
-		}
-		if !roots.AppendCertsFromPEM(pem) {
-			return nil, errors.New("invalid imaging CA bundle")
-		}
-		tr.TLSClientConfig.RootCAs = roots
-	}
+	tr := &http.Transport{TLSClientConfig: a.tlsFor(u.Hostname()), DisableCompression: true, IdleConnTimeout: 90 * time.Second}
 	switch g.Mode {
 	case "internal":
 		tr.DialContext, e = imagingDialContext(iface)
@@ -83,11 +75,31 @@ func openImaging(g imagingGrant, iface, ca string) (*imagingTransfer, error) {
 			return nil, e
 		}
 	case "internet":
+		if a.Proxy != "" {
+			// as the API client: a proxy that does not parse is logged, not used
+			if p, err := parseProxyURL(a.Proxy); err != nil {
+				a.Logger.Errorln("Imaging transfer:", err)
+			} else {
+				tr.Proxy = http.ProxyURL(p)
+			}
+		}
 	default:
 		return nil, errors.New("unknown imaging network mode")
 	}
-	return &imagingTransfer{g, &http.Client{Transport: tr, Timeout: 2 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, 2 * time.Second}, nil
+	return &imagingTransfer{grant: g, client: &http.Client{Transport: tr, Timeout: 2 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, retry: 2 * time.Second}, nil
 }
+
+// imagingStatusError is a transfer answer outside 2xx.
+type imagingStatusError struct {
+	path   string
+	status int
+	detail string
+}
+
+func (e *imagingStatusError) Error() string {
+	return fmt.Sprintf("imaging server answered %d %s", e.status, e.detail)
+}
+
 func (t *imagingTransfer) request(ctx context.Context, method, path string, body []byte, content string) ([]byte, int, error) {
 	req, e := http.NewRequestWithContext(ctx, method, t.grant.URL+path, bytes.NewReader(body))
 	if e != nil {
@@ -112,8 +124,12 @@ func (t *imagingTransfer) request(ctx context.Context, method, path string, body
 	}
 	if e == nil && (r.StatusCode < 200 || r.StatusCode >= 300) {
 		var problem struct{ Detail string }
-		json.Unmarshal(data, &problem)
-		e = fmt.Errorf("imaging server answered %d %s", r.StatusCode, problem.Detail)
+		var list []string
+		// some refusals are a JSON list of messages
+		if json.Unmarshal(data, &problem) != nil && json.Unmarshal(data, &list) == nil && len(list) > 0 {
+			problem.Detail = list[0]
+		}
+		e = &imagingStatusError{path, r.StatusCode, problem.Detail}
 	}
 	return data, r.StatusCode, e
 }
@@ -123,12 +139,23 @@ func imagingTemporary(status int) bool {
 	return status == 0 || status == http.StatusTooManyRequests || (status >= 500 && status != http.StatusInsufficientStorage)
 }
 
-// requestRetry repeats a request that got no answer or a temporary server error.
+// requestRetry repeats a request that got no answer or a temporary server
+// error. After the tries a run waits in its network pause and tries again.
 func (t *imagingTransfer) requestRetry(ctx context.Context, method, path string, body []byte, content string) ([]byte, int, error) {
 	for attempt := 0; ; attempt++ {
 		data, status, err := t.request(ctx, method, path, body, content)
-		if err == nil || !imagingTemporary(status) || attempt == 4 || ctx.Err() != nil {
+		if err == nil || !imagingTemporary(status) {
+			t.run.netBack()
 			return data, status, err
+		}
+		if ctx.Err() != nil || attempt >= 4 && t.run == nil {
+			return data, status, err
+		}
+		if attempt >= 4 {
+			if e := t.run.netLost(ctx); e != nil {
+				return data, status, e
+			}
+			continue
 		}
 		select {
 		case <-ctx.Done():
@@ -151,60 +178,74 @@ func (t *imagingTransfer) manifest(ctx context.Context, agent, disk, direction s
 	}
 	return m, nil
 }
+
+// imagingPartsWindow is the number of blocks a run names in one parts/ request.
+const imagingPartsWindow = 16
+
+type imagingPart struct {
+	i   int
+	raw []byte
+	sum [32]byte
+	// stream offset after the block
+	end int64
+}
+
+func (p imagingPart) path() string {
+	return fmt.Sprintf("part/?i=%d&size=%d&sha256=%x", p.i, len(p.raw), p.sum)
+}
+
 func (t *imagingTransfer) upload(ctx context.Context, m imagingManifest, source io.Reader) error {
 	if _, _, e := t.requestRetry(ctx, "POST", "begin/", nil, ""); e != nil {
 		return e
 	}
 	sum := sha256.New()
 	var size int64
-	buf := make([]byte, imagingBlock)
-	for index := 0; ; index++ {
-		n, e := io.ReadFull(source, buf)
-		if e == io.EOF {
+	window := 1
+	if t.run != nil {
+		window = imagingPartsWindow
+	}
+	bufs := make([][]byte, window)
+	for index, eof := 0, false; !eof; {
+		var parts []imagingPart
+		for len(parts) < window {
+			if e := t.run.gate(); e != nil {
+				return e
+			}
+			if bufs[len(parts)] == nil {
+				bufs[len(parts)] = make([]byte, imagingBlock)
+			}
+			n, e := io.ReadFull(source, bufs[len(parts)])
+			if e == io.EOF {
+				eof = true
+				break
+			}
+			if e != nil && e != io.ErrUnexpectedEOF {
+				return e
+			}
+			raw := bufs[len(parts)][:n]
+			h := sha256.Sum256(raw)
+			if m.Native.Method == linuxFilesMethod {
+				sum.Write(h[:])
+			} else {
+				sum.Write(raw)
+			}
+			size += int64(n)
+			parts = append(parts, imagingPart{index, raw, h, size})
+			index++
+			t.run.read(n)
+		}
+		if len(parts) == 0 {
 			break
 		}
-		if e != nil && e != io.ErrUnexpectedEOF {
-			return e
-		}
-		raw := buf[:n]
-		h := sha256.Sum256(raw)
-		if m.Native.Method == linuxFilesMethod {
-			sum.Write(h[:])
+		var err error
+		if t.run != nil {
+			err = t.parts(ctx, m, parts)
 		} else {
-			sum.Write(raw)
-		}
-		path := fmt.Sprintf("part/?i=%d&size=%d&sha256=%x", index, n, h)
-		_, status, err := t.requestRetry(ctx, "POST", path, nil, "")
-		if status == http.StatusNotFound {
-			var b bytes.Buffer
-			payload := raw
-			if m.Codec == "gzip" {
-				z, err := gzip.NewWriterLevel(&b, m.Level)
-				if err != nil {
-					return err
-				}
-				if _, err = z.Write(raw); err != nil {
-					return err
-				}
-				if err = z.Close(); err != nil {
-					return err
-				}
-				payload = b.Bytes()
-			} else if m.Codec != "none" {
-				return errors.New("unsupported imaging compression")
-			}
-			_, status, err = t.requestRetry(ctx, "PUT", path, payload, "application/octet-stream")
-		}
-		if status == http.StatusConflict {
-			// A retry after a lost answer finds its block already committed.
-			if committed, e := t.manifest(ctx, m.Agent, m.Disk, "capture"); e == nil && committed.Offset == size+int64(n) {
-				err = nil
-			}
+			err = t.part(ctx, m, parts[0])
 		}
 		if err != nil {
 			return err
 		}
-		size += int64(n)
 	}
 	digest := hex.EncodeToString(sum.Sum(nil))
 	fields := map[string]any{}
@@ -218,11 +259,120 @@ func (t *imagingTransfer) upload(ctx context.Context, m imagingManifest, source 
 		// A connection can disappear after the server commits the manifest.
 		committed, e := t.manifest(ctx, m.Agent, m.Disk, "capture")
 		if e == nil && (committed.Status == "verifying" || committed.Status == "verified") && committed.Offset == size && committed.Hash == digest {
+			err = nil
+		}
+	}
+	if err == nil {
+		t.run.sealedNow()
+	}
+	return err
+}
+
+// part sends one block the way agents before the batch request do.
+func (t *imagingTransfer) part(ctx context.Context, m imagingManifest, p imagingPart) error {
+	_, status, err := t.requestRetry(ctx, "POST", p.path(), nil, "")
+	if status == http.StatusNotFound {
+		status, err = t.put(ctx, m, p)
+	}
+	return t.committed(ctx, m, p, status, err)
+}
+
+// committed: a retry after a lost answer finds its block already committed.
+func (t *imagingTransfer) committed(ctx context.Context, m imagingManifest, p imagingPart, status int, err error) error {
+	if status == http.StatusConflict {
+		if c, e := t.manifest(ctx, m.Agent, m.Disk, "capture"); e == nil && c.Offset == p.end {
 			return nil
 		}
 	}
 	return err
 }
+
+func (t *imagingTransfer) put(ctx context.Context, m imagingManifest, p imagingPart) (int, error) {
+	var b bytes.Buffer
+	payload := p.raw
+	if m.Codec == "gzip" {
+		z, err := gzip.NewWriterLevel(&b, m.Level)
+		if err != nil {
+			return 0, err
+		}
+		if _, err = z.Write(p.raw); err != nil {
+			return 0, err
+		}
+		if err = z.Close(); err != nil {
+			return 0, err
+		}
+		payload = b.Bytes()
+	} else if m.Codec != "none" {
+		return 0, errors.New("unsupported imaging compression")
+	}
+	if err := t.run.charge(ctx, len(payload)); err != nil {
+		return 0, err
+	}
+	_, status, err := t.requestRetry(ctx, "PUT", p.path(), payload, "application/octet-stream")
+	if err == nil {
+		t.run.uploaded(len(p.raw), len(payload))
+	}
+	return status, err
+}
+
+// parts attaches the known blocks of a window with batch requests and sends
+// the first one the server lacks with PUT part/, until the window is done.
+func (t *imagingTransfer) parts(ctx context.Context, m imagingManifest, parts []imagingPart) error {
+	for len(parts) > 0 {
+		entries := make([]map[string]any, len(parts))
+		for k, p := range parts {
+			entries[k] = map[string]any{"i": p.i, "size": len(p.raw), "id": hex.EncodeToString(p.sum[:])}
+		}
+		body, _ := json.Marshal(map[string]any{"parts": entries})
+		if err := t.run.charge(ctx, len(body)); err != nil {
+			return err
+		}
+		data, status, err := t.requestRetry(ctx, "POST", "parts/", body, "application/json")
+		t.run.uploaded(0, len(body))
+		var answer struct {
+			Missing []int `json:"missing"`
+			Offset  int64 `json:"offset"`
+		}
+		if status == http.StatusConflict {
+			// the server is further on within this window: a lost answer
+			k := 0
+			if json.Unmarshal(data, &answer) == nil {
+				k = slices.IndexFunc(parts, func(p imagingPart) bool { return p.end == answer.Offset }) + 1
+			}
+			if k == 0 {
+				return err
+			}
+			parts = parts[k:]
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if err := json.Unmarshal(data, &answer); err != nil {
+			return err
+		}
+		if len(answer.Missing) == 0 {
+			if end := parts[len(parts)-1].end; answer.Offset != end {
+				return fmt.Errorf("the server attached the batch to offset %d instead of %d", answer.Offset, end)
+			}
+			return nil
+		}
+		k := answer.Missing[0] - parts[0].i
+		if k < 0 || k >= len(parts) {
+			return errors.New("the server named a block outside the batch")
+		}
+		if err := t.run.gate(); err != nil {
+			return err
+		}
+		status, err = t.put(ctx, m, parts[k])
+		if err := t.committed(ctx, m, parts[k], status, err); err != nil {
+			return err
+		}
+		parts = parts[k+1:]
+	}
+	return nil
+}
+
 func (t *imagingTransfer) fetch(ctx context.Context, m imagingManifest, path string) error {
 	// Its digest covers block digests, not the stream this would write.
 	if m.Native.Method == linuxFilesMethod {

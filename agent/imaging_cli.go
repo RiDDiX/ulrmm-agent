@@ -12,6 +12,8 @@ import (
 	"io"
 	"os"
 	"strings"
+
+	"github.com/sirupsen/logrus"
 )
 
 func ImagingCommand(command string, args []string) error {
@@ -35,7 +37,7 @@ func ImagingCommand(command string, args []string) error {
 		return err
 	}
 	ctx := context.Background()
-	t, err := openImaging(imagingGrant{URL: *addr, Token: strings.TrimSpace(token), Image: *img, Mode: *mode}, *iface, *ca)
+	t, err := openImaging(imagingGrant{URL: *addr, Token: strings.TrimSpace(token), Image: *img, Mode: *mode}, *iface, &Agent{Logger: logrus.New(), Cert: *ca})
 	if err != nil {
 		return err
 	}

@@ -4,6 +4,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -467,9 +468,16 @@ func (r *rpcReq) run() {
 	case "imagingpoll":
 		// This only wakes the authenticated HTTPS poll. RPC supplies no source,
 		// destination, artifact, or credential.
-		select {
-		case imagingWake <- struct{}{}:
-		default:
+		a.imagingWoken()
+	case "imagingcheck":
+		r.reply("ok")
+		a.imagingProbe(context.Background())
+		imagingWakeUp()
+	case "imagingcancel":
+		if a.imagingCancel(p.Data["run"]) {
+			r.reply("ok")
+		} else {
+			r.reply("notrunning")
 		}
 	case "runchecks":
 		if a.ChecksRunning() {

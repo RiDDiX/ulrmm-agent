@@ -28,6 +28,8 @@ type ImagingCapability struct {
 	// Set by the server in a grant manifest (image.native), never reported.
 	Include []string `json:"include,omitempty"`
 	Missing []string `json:"missing,omitempty"`
+	// Set by the agent from the run settings before the capture, never reported.
+	Priority string `json:"priority,omitempty"`
 }
 
 type ImagingVolume struct {

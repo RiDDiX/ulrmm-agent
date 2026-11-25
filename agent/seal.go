@@ -48,6 +48,48 @@ func sealedPath(method, path string) bool {
 	return false
 }
 
+// The imaging answers have a rule of their own, in both armed states: an
+// unsealed 204 and an old server's grant pass, a 200 that names a settings
+// version must be sealed, and within 24 h of an answer that named a version
+// every 200 must name one.
+var imagingSealedPaths = []struct {
+	method string
+	re     *regexp.Regexp
+}{
+	{http.MethodPost, regexp.MustCompile(`^/api/v3/[^/]+/imaging/$`)},
+	{http.MethodGet, regexp.MustCompile(`^/api/v3/[^/]+/imaging/config/$`)},
+}
+
+func imagingSealedPath(method, path string) bool {
+	for _, p := range imagingSealedPaths {
+		if p.method == method && p.re.MatchString(path) {
+			return true
+		}
+	}
+	return false
+}
+
+// sealError is a sealed answer that did not open, or an imaging answer that
+// came unsealed where a seal is required; reason is the short cause.
+type sealError struct{ reason, text string }
+
+func (e *sealError) Error() string { return e.text }
+
+func sealRefused(reason string) error { return &sealError{reason, "sealed answer: " + reason} }
+
+func (a *Agent) imagingAnswerAllowed(path string, status int, h http.Header, sealed bool) error {
+	named := len(h.Values(imagingConfigHeader)) > 0
+	if named {
+		a.imaging.headerAt.Store(time.Now().UnixMilli())
+	}
+	if status == http.StatusOK && (named && !sealed || !named && a.imagingHeaderSeen()) {
+		err := &sealError{"unsealed", "refusing an unsealed imaging answer from " + path}
+		a.queueSecurityEvent("envelope_refused", err.Error())
+		return err
+	}
+	return nil
+}
+
 type sealedBody struct {
 	V   int    `json:"v"`
 	Kid string `json:"kid"`
@@ -68,33 +110,33 @@ func sealSigned(agentID, path string, e []byte, t int64, c []byte) []byte {
 func openSealed(id *identity, agentID, path string, pins *pinSet, raw []byte, serverNowMs int64) ([]byte, error) {
 	var b sealedBody
 	if err := json.Unmarshal(raw, &b); err != nil || b.V != 2 {
-		return nil, errors.New("sealed answer: not a sealed body")
+		return nil, sealRefused("not a sealed body")
 	}
 	e, err1 := base64.StdEncoding.DecodeString(b.E)
 	c, err2 := base64.StdEncoding.DecodeString(b.C)
 	g, err3 := base64.StdEncoding.DecodeString(b.G)
 	if err1 != nil || err2 != nil || err3 != nil || len(e) != 32 {
-		return nil, errors.New("sealed answer: malformed")
+		return nil, sealRefused("malformed")
 	}
 	pub := pins.cmdKey(b.Kid)
 	if len(pub) != ed25519.PublicKeySize || !ed25519.Verify(pub, sealSigned(agentID, path, e, b.T, c), g) {
-		return nil, errors.New("sealed answer: signature")
+		return nil, sealRefused("signature")
 	}
 	if d := b.T - serverNowMs; d > e2eClockWindow.Milliseconds() || -d > e2eClockWindow.Milliseconds() {
-		return nil, errors.New("sealed answer: clock")
+		return nil, sealRefused("clock")
 	}
 	ep, err := ecdh.X25519().NewPublicKey(e)
 	if err != nil {
-		return nil, errors.New("sealed answer: key")
+		return nil, sealRefused("key")
 	}
 	shared, err := id.x.ECDH(ep)
 	if err != nil {
-		return nil, errors.New("sealed answer: key")
+		return nil, sealRefused("key")
 	}
 	key, _ := hkdf.Key(sha256.New, shared, nil, "ulrmm seal v1\x00"+agentID+path, 32)
 	plain, err := unseal(key, make([]byte, 12), c, []byte(path))
 	if err != nil {
-		return nil, errors.New("sealed answer: decrypt")
+		return nil, sealRefused("decrypt")
 	}
 	return plain, nil
 }
@@ -109,16 +151,27 @@ type sealTransport struct {
 
 func (t *sealTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	a := t.a
-	if !a.registered() {
-		return t.base.RoundTrip(req)
+	registered := a.registered()
+	if registered {
+		req = req.Clone(req.Context())
+		req.Header.Set(sealAsk, "1")
 	}
-	req = req.Clone(req.Context())
-	req.Header.Set(sealAsk, "1")
 	resp, err := t.base.RoundTrip(req)
 	if err != nil {
 		return nil, err
 	}
-	if resp.Header.Get(sealMarker) != "1" {
+	resp.Header.Del(imagingOpened)
+	sealed := registered && resp.Header.Get(sealMarker) == "1"
+	if imagingSealedPath(req.Method, req.URL.Path) {
+		if err := a.imagingAnswerAllowed(req.URL.Path, resp.StatusCode, resp.Header, sealed); err != nil {
+			resp.Body.Close()
+			return nil, err
+		}
+	}
+	if !registered {
+		return resp, nil
+	}
+	if !sealed {
 		if a.sec2Armed() && resp.StatusCode/100 == 2 && sealedPath(req.Method, req.URL.Path) {
 			resp.Body.Close()
 			return nil, errors.New("refusing an unsealed answer from " + req.URL.Path)
@@ -140,5 +193,6 @@ func (t *sealTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp.Header.Set("Content-Length", strconv.Itoa(len(plain)))
 	resp.Header.Set("Content-Type", "application/json")
 	resp.Header.Del(sealMarker)
+	resp.Header.Set(imagingOpened, "1")
 	return resp, nil
 }

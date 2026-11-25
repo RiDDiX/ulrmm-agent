@@ -27,6 +27,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 	"unicode/utf16"
@@ -782,5 +783,91 @@ func TestImagingStreamFailureNeverSeals(t *testing.T) {
 	index, _ := seals[0]["index"].(map[string]any)
 	if len(seals) != 1 || seals[0]["size"] != float64(3) || index["size"] != float64(2) {
 		t.Fatalf("seal %v", seals)
+	}
+}
+
+func TestChildPdeathsig(t *testing.T) {
+	if os.Getenv("ULRMM_TEST_PDEATH_PARENT") == "1" {
+		attr := linuxFilesAttr()
+		cmd := exec.Command("sleep", "60")
+		cmd.SysProcAttr = attr
+		err := cmd.Start()
+		if errors.Is(err, syscall.EPERM) {
+			// a mount namespace needs CAP_SYS_ADMIN, the signal does not
+			attr.Unshareflags = 0
+			cmd = exec.Command("sleep", "60")
+			cmd.SysProcAttr = attr
+			err = cmd.Start()
+		}
+		if err != nil {
+			os.Exit(2)
+		}
+		fmt.Println(cmd.Process.Pid)
+		time.Sleep(time.Minute)
+		os.Exit(0)
+	}
+	var attr *syscall.SysProcAttr
+	old := linuxFilesStart
+	linuxFilesStart = func(cmd *exec.Cmd, _ []byte, _ string) (*imagingStream, error) {
+		attr = cmd.SysProcAttr
+		return nil, errors.New("not started")
+	}
+	startLinuxFiles(context.Background(), ImagingCapability{JobID: "0b6e1a8e-6d6a-4c3e-9f1e-2a1b3c4d5e6f"})
+	linuxFilesStart = old
+	if attr == nil || attr.Pdeathsig != syscall.SIGKILL || attr.Unshareflags != syscall.CLONE_NEWNS {
+		t.Fatalf("the capture child starts with %+v", attr)
+	}
+	parent := exec.Command(os.Args[0], "-test.run=^TestChildPdeathsig$")
+	parent.Env = append(os.Environ(), "ULRMM_TEST_PDEATH_PARENT=1")
+	out, err := parent.StdoutPipe()
+	if err == nil {
+		err = parent.Start()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pid int
+	if _, err := fmt.Fscan(out, &pid); err != nil || pid <= 0 {
+		parent.Process.Kill()
+		t.Fatalf("child pid: %v", err)
+	}
+	parent.Process.Kill()
+	parent.Wait()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+		if err != nil || strings.Contains(string(stat), ") Z ") {
+			return
+		}
+		if time.Now().After(deadline) {
+			syscall.Kill(pid, syscall.SIGKILL)
+			t.Fatal("the capture child outlived the agent")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestChildBackgroundNice(t *testing.T) {
+	var asked [][3]int
+	old, oldStart := linuxSetpriority, linuxFilesStart
+	linuxSetpriority = func(which, who, prio int) error {
+		asked = append(asked, [3]int{which, who, prio})
+		return nil
+	}
+	var stdin []byte
+	linuxFilesStart = func(_ *exec.Cmd, in []byte, _ string) (*imagingStream, error) {
+		stdin = in
+		return nil, errors.New("not started")
+	}
+	t.Cleanup(func() { linuxSetpriority, linuxFilesStart = old, oldStart })
+	linuxFilesNice("normal")
+	linuxFilesNice("background")
+	if !reflect.DeepEqual(asked, [][3]int{{unix.PRIO_PROCESS, 0, 10}}) {
+		t.Fatalf("asked for %v", asked)
+	}
+	startLinuxFiles(context.Background(), ImagingCapability{JobID: "0b6e1a8e-6d6a-4c3e-9f1e-2a1b3c4d5e6f", Priority: "background"})
+	var approved ImagingCapability
+	if err := json.Unmarshal(stdin, &approved); err != nil || approved.Priority != "background" {
+		t.Fatalf("the child gets %s: %v", stdin, err)
 	}
 }

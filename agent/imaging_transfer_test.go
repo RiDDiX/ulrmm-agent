@@ -8,14 +8,18 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -387,5 +391,125 @@ func TestImagingFetchRefusesLinuxFilesPoints(t *testing.T) {
 	}
 	if _, err := os.Lstat(path); !os.IsNotExist(err) {
 		t.Fatal("fetch created output")
+	}
+}
+
+// blocks is a stream of n full blocks whose content repeats every three.
+func blocks(n int) (io.Reader, [][]byte) {
+	kinds := [][]byte{bytes.Repeat([]byte{0}, imagingBlock), bytes.Repeat([]byte{1}, imagingBlock), bytes.Repeat([]byte{2}, imagingBlock)}
+	var parts []io.Reader
+	for i := range n {
+		parts = append(parts, bytes.NewReader(kinds[i%3]))
+	}
+	return io.MultiReader(parts...), kinds
+}
+
+func blockID(b []byte) string {
+	sum := sha256.Sum256(b)
+	return fmt.Sprintf("%x", sum)
+}
+
+func TestPartsWindowUploadsFirstMissing(t *testing.T) {
+	f := newRunFake(t)
+	source, kinds := blocks(17)
+	f.known[blockID(kinds[0])] = true
+	tr := f.transfer()
+	tr.run = bareRun(testUpdateAgent(), imagingClaim{Run: "r"})
+	if err := tr.upload(context.Background(), f.manifest, source); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !reflect.DeepEqual(f.batches, []int{16, 14, 13, 1}) || !reflect.DeepEqual(f.puts, []string{"1", "2"}) || f.offset != 17*imagingBlock {
+		t.Fatalf("batches %v, puts %v, offset %d", f.batches, f.puts, f.offset)
+	}
+	body, _ := tr.run.body(nil, false)
+	c := body["counters"].(map[string]any)
+	if c["blocks_read"] != int64(17) || c["blocks_new"] != int64(2) || c["bytes_read"] != int64(17*imagingBlock) || c["dedup_permille"] != int64(882) ||
+		c["compression_permille"] != int64(1000) || !tr.run.sealed {
+		t.Fatalf("counters %v, sealed %v", c, tr.run.sealed)
+	}
+	// without a run the single part requests stay
+	f.batches, f.puts = nil, nil
+	f.mu.Unlock()
+	source, _ = blocks(2)
+	err := f.transfer().upload(context.Background(), f.manifest, source)
+	f.mu.Lock()
+	if err != nil || len(f.batches) != 0 || !slices.Contains(f.requests, "POST /part/") {
+		t.Fatalf("legacy upload: %v, batches %v", err, f.batches)
+	}
+}
+
+func TestPartsOffset409ContinuesInWindow(t *testing.T) {
+	f := newRunFake(t)
+	source, kinds := blocks(17)
+	for _, k := range kinds {
+		f.known[blockID(k)] = true
+	}
+	f.loseParts = 1
+	tr := f.transfer()
+	tr.run = bareRun(testUpdateAgent(), imagingClaim{Run: "r"})
+	if err := tr.upload(context.Background(), f.manifest, source); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	if f.conflicts != 1 || !reflect.DeepEqual(f.batches, []int{16, 16, 1}) || f.offset != 17*imagingBlock {
+		t.Fatalf("conflicts %d, batches %v, offset %d", f.conflicts, f.batches, f.offset)
+	}
+	// a lost answer on the window with the short last block: the offset is
+	// no block multiple and still ends the window
+	f.batches, f.conflicts, f.loseParts = nil, 0, 1
+	f.known[blockID([]byte("tail"))] = true
+	f.mu.Unlock()
+	source, _ = blocks(1)
+	if err := tr.upload(context.Background(), f.manifest, io.MultiReader(source, strings.NewReader("tail"))); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	if f.conflicts != 1 || !reflect.DeepEqual(f.batches, []int{2, 2}) || f.offset != imagingBlock+4 {
+		t.Fatalf("short last block: conflicts %d, batches %v, offset %d", f.conflicts, f.batches, f.offset)
+	}
+	f.conflictOffset = 3
+	f.mu.Unlock()
+	source, _ = blocks(2)
+	err := tr.upload(context.Background(), f.manifest, source)
+	if final := imagingFinalFor(err, "upload"); final == nil || final.Reason != "The server refused the upload: 409 Batch entries must continue at the committed block." {
+		t.Fatalf("offset outside the window: %v", err)
+	}
+}
+
+func TestPauseMaxZeroInterruptsAtOnce(t *testing.T) {
+	f := newRunFake(t)
+	f.failParts = 100
+	tr := f.transfer()
+	tr.run = bareRun(testUpdateAgent(), imagingClaim{Run: "r"})
+	err := tr.upload(context.Background(), f.manifest, strings.NewReader("block"))
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if final := imagingFinalFor(err, "upload"); final == nil || final.Status != "interrupted" || final.Reason != "The network was lost." || len(f.batches) != 5 {
+		t.Fatalf("%v after %d tries", err, len(f.batches))
+	}
+}
+
+func TestOpenImagingUsesTLSFor(t *testing.T) {
+	a := testUpdateAgent()
+	a.ApiURL, a.Proxy = "rmm.example", "http://proxy.example:3128"
+	grant := imagingGrant{URL: "https://rmm.example/imaging/transfers/x/", Token: "t", Mode: "internet"}
+	tr, err := openImaging(grant, "", a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := tr.client.Transport.(*http.Transport)
+	proxy, _ := h.Proxy(&http.Request{URL: &url.URL{Scheme: "https", Host: "rmm.example"}})
+	if h.TLSClientConfig.GetClientCertificate == nil || h.TLSClientConfig.MinVersion != tls.VersionTLS13 || proxy == nil || proxy.Host != "proxy.example:3128" {
+		t.Fatalf("RMM transfer: TLS %+v, proxy %v", h.TLSClientConfig, proxy)
+	}
+	grant.URL = "https://nas.example/imaging/transfers/x/"
+	if tr, err = openImaging(grant, "", a); err != nil || tr.client.Transport.(*http.Transport).TLSClientConfig.GetClientCertificate != nil {
+		t.Fatalf("another host got the client certificate: %v", err)
+	}
+	a.Cert = filepath.Join(t.TempDir(), "missing.pem")
+	if _, err := openImaging(grant, "", a); err == nil || err.Error() != "invalid imaging CA bundle" {
+		t.Fatalf("missing CA file: %v", err)
 	}
 }

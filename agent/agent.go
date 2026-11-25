@@ -91,6 +91,9 @@ type Agent struct {
 
 	// identity, sessions and tokens of signed commands
 	sec2 sec2State
+
+	// backup settings, capability and readiness checks, in memory only
+	imaging imagingState
 }
 
 // Paths from brand.go, set by setNixLayout. Tests point etcConfig at a temp file.
@@ -560,6 +563,7 @@ func (a *Agent) setupNatsOptions() []nats.Option {
 		nats.ReconnectHandler(func(*nats.Conn) {
 			a.Logger.Debugln("NATS reconnected")
 			a.natsUp.Store(true)
+			a.imagingReconnected()
 			if a.keepNew != nil {
 				a.keepNew()
 			}

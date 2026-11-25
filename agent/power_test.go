@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -514,4 +515,52 @@ func TestAwakeUndoRetried(t *testing.T) {
 	if err := applyAwakeLocked(until(0)); err != nil || disable != "0" {
 		t.Fatalf("undo: %v disablesleep %s", err, disable)
 	}
+}
+
+func TestOnACParsers(t *testing.T) {
+	for status, want := range map[byte][2]bool{0: {false, true}, 1: {true, true}, 255: {false, false}} {
+		if on, known := imagingACLine(status); on != want[0] || known != want[1] {
+			t.Errorf("ACLineStatus %d: %v %v", status, on, known)
+		}
+	}
+	for _, c := range []struct {
+		out      string
+		err      error
+		on, know bool
+	}{{"Now drawing from 'AC Power'\n", nil, true, true}, {"Now drawing from 'Battery Power'\n", nil, false, true}, {"", errors.New("signal: killed"), false, false}} {
+		if on, known := imagingPmsetAC(c.out, c.err); on != c.on || known != c.know {
+			t.Errorf("pmset %q %v: %v %v", c.out, c.err, on, known)
+		}
+	}
+	root := t.TempDir()
+	supply := func(name, typ, online, scope string) {
+		dir := filepath.Join(root, name)
+		os.MkdirAll(dir, 0o755)
+		for file, v := range map[string]string{"type": typ, "online": online, "scope": scope} {
+			if v != "" {
+				os.WriteFile(filepath.Join(dir, file), []byte(v+"\n"), 0o644)
+			}
+		}
+	}
+	check := func(what string, on, known bool) {
+		t.Helper()
+		if gotOn, gotKnown := imagingSysfsOnAC(root); gotOn != on || gotKnown != known {
+			t.Errorf("%s: %v %v, want %v %v", what, gotOn, gotKnown, on, known)
+		}
+	}
+	check("no supply", true, true)
+	supply("ucsi-source-psy-1", "USB", "0", "")
+	check("desktop with an idle USB-C port", true, true)
+	supply("hidpp_battery_0", "Battery", "", "Device")
+	check("desktop with a wireless mouse", true, true)
+	supply("CMB0", "Battery", "", "System")
+	check("on battery, named CMB0", false, true)
+	supply("AC", "Mains", "1", "")
+	check("on mains", true, true)
+	root = t.TempDir()
+	supply("BAT1", "Battery", "", "")
+	check("a battery without a supply entry", false, false)
+	root = t.TempDir()
+	supply("BAT0", "Mains", "0", "")
+	check("a name is not a battery", true, true)
 }

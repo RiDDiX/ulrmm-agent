@@ -223,7 +223,7 @@ func TestLinuxImagingTunnel(t *testing.T) {
 	}
 	transfer, err := openImaging(imagingGrant{
 		URL: url, Token: "temporary-test-token-value", Mode: mode,
-	}, "wg0", os.Getenv("ULRMM_QA_TUNNEL_CA"))
+	}, "wg0", &Agent{Logger: logrus.New(), Cert: os.Getenv("ULRMM_QA_TUNNEL_CA")})
 	if err != nil {
 		t.Fatal(err)
 	}

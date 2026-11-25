@@ -69,6 +69,7 @@ func (a *Agent) watchStop(nc *nats.Conn) {
 		}
 	}
 	recordStop(a.dataDir(), time.Now())
+	a.imagingServiceStop()
 	os.Exit(0)
 }
 

@@ -491,10 +491,30 @@ func startLinuxFiles(ctx context.Context, expected ImagingCapability) (io.ReadCl
 		return nil, err
 	}
 	cmd := exec.CommandContext(ctx, self, "imaging-stream", "--point", expected.JobID)
-	// Go makes / private in the child, so its views never reach this namespace.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Unshareflags: syscall.CLONE_NEWNS}
-	return startImagingStream(cmd, approved, filepath.Join(linuxFilesRun, expected.JobID))
+	cmd.SysProcAttr = linuxFilesAttr()
+	return linuxFilesStart(cmd, approved, filepath.Join(linuxFilesRun, expected.JobID))
 }
+
+// linuxFilesStart starts the child; tests replace it.
+var linuxFilesStart = startImagingStream
+
+// linuxFilesAttr: Go makes / private in the child, so its views never reach
+// this namespace, and the child dies with the agent. The signal follows the
+// thread that starts the child, so that goroutine holds no LockOSThread.
+func linuxFilesAttr() *syscall.SysProcAttr {
+	return &syscall.SysProcAttr{Unshareflags: syscall.CLONE_NEWNS, Pdeathsig: syscall.SIGKILL}
+}
+
+// linuxFilesNice lowers the CPU priority of the walking thread for a
+// background run; the I/O class is idle in every run.
+func linuxFilesNice(priority string) {
+	if priority == "background" {
+		linuxSetpriority(unix.PRIO_PROCESS, 0, 10)
+	}
+}
+
+// linuxSetpriority is unix.Setpriority; tests replace it.
+var linuxSetpriority = unix.Setpriority
 
 // imagingStream passes the child's stdout through and turns its end into
 // io.EOF only when the child exited 0 and wrote its trailer.
@@ -612,6 +632,7 @@ func ImagingStreamCommand(args []string) error {
 	// An I/O priority belongs to a thread, and the walk runs on this one.
 	runtime.LockOSThread()
 	unix.Syscall(unix.SYS_IOPRIO_SET, 1, 0, 3<<13)
+	linuxFilesNice(approved.Priority)
 	ctx := context.Background()
 	plan := linuxFilesCurrent(ctx)
 	volumes, err := linuxFilesPreflight(approved, plan)

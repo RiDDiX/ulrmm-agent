@@ -620,23 +620,33 @@ func (a *Agent) patchWithRetry(path string, body interface{}, wait time.Duration
 // patchWithRetryFor is patchWithRetry that sends no more once limit (when
 // above zero) has passed since the first try.
 func (a *Agent) patchWithRetryFor(path string, body interface{}, wait, limit time.Duration) error {
+	_, err := a.retrySend(path, wait, limit, func() (int, error) {
+		r, err := a.rClient.R().SetBody(body).Patch(path)
+		if err != nil {
+			return 0, err
+		}
+		if r.IsError() {
+			return r.StatusCode(), fmt.Errorf("server answered %d", r.StatusCode())
+		}
+		return r.StatusCode(), nil
+	})
+	return err
+}
+
+// retrySend is the loop of patchWithRetryFor for any sender; code 0 is no
+// answer.
+func (a *Agent) retrySend(what string, wait, limit time.Duration, send func() (int, error)) (int, error) {
 	// Round(0): the monotonic clock stops in suspend on Linux and macOS
 	first := time.Now().Round(0)
 	for try := 1; ; try++ {
-		code := 0
-		r, err := a.rClient.R().SetBody(body).Patch(path)
-		if err == nil {
-			if code = r.StatusCode(); r.IsError() {
-				err = fmt.Errorf("server answered %d", code)
-			}
-		}
+		code, err := send()
 		if err == nil || try == 4 || (code >= 400 && code < 500) {
-			return err
+			return code, err
 		}
-		a.Logger.Debugln("PATCH", path, err)
+		a.Logger.Debugln("PATCH", what, err)
 		time.Sleep(wait)
 		if limit > 0 && time.Now().Round(0).Sub(first) > limit {
-			return fmt.Errorf("not sent again after %s: %w", limit, err)
+			return code, fmt.Errorf("not sent again after %s: %w", limit, err)
 		}
 	}
 }

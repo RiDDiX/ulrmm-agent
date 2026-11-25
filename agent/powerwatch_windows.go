@@ -79,12 +79,13 @@ func (w *winService) Execute(_ []string, r <-chan svc.ChangeRequest, s chan<- sv
 		case svc.Interrogate:
 			s <- c.CurrentStatus
 		case svc.PreShutdown:
-			s <- svc.Status{State: svc.StopPending, WaitHint: 8000}
+			// the power notice, then the final of a backup run
+			s <- svc.Status{State: svc.StopPending, WaitHint: uint32((preShutdownBudget + imagingStopWait + imagingStopFinal + 2*time.Second).Milliseconds())}
 			w.shutdown()
 			w.stop()
 			return false, 0
 		case svc.Stop, svc.Shutdown:
-			s <- svc.Status{State: svc.StopPending}
+			s <- svc.Status{State: svc.StopPending, WaitHint: uint32((imagingStopWait + imagingStopFinal + 2*time.Second).Milliseconds())}
 			w.stop()
 			return false, 0
 		}

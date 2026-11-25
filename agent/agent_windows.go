@@ -53,6 +53,7 @@ func (a *Agent) Start(_ service.Service) error {
 // next start.
 func (a *Agent) Stop(_ service.Service) error {
 	recordStop(a.dataDir(), time.Now())
+	a.imagingServiceStop()
 	return nil
 }
 
